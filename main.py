@@ -34,6 +34,29 @@ def show_intro(screen):
         return True
 
 def main():
+    import cv2
+
+    # Open the default camera
+    cam = cv2.VideoCapture(0)
+    if not cam.isOpened():
+        print("Could not open camera")
+        exit(1)
+    
+    while True:
+
+        success, frame = cam.read()
+
+        if not success:
+            print("Could not capture frame")
+            break
+
+        cv2.imshow("Camera", frame)
+
+        if cv2.waitKey(1) == ord('q'):
+            break
+
+    cam.release()
+    cv2.destroyAllWindows()
     """Main function to start the game."""
     
     pygame.init()
