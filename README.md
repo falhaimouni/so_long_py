@@ -64,6 +64,10 @@ Hand tracking:
 
 The webcam frame is mirrored with `cv2.flip(frame, 1)`, so the controls feel natural like looking into a mirror.
 
+### Hand Movement Guide
+
+![Webcam hand controls infographic](docs/webcam-hand-controls-infographic.png)
+
 ## Map Symbols
 
 Levels are stored in `levels.txt` and separated with `---`.

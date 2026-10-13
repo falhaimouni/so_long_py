@@ -26,8 +26,8 @@ def show_intro(screen):
         waiting = True
         while waiting:
             for event in pygame.event.get():
-                # if event.type == pygame.QUIT:
-                #     return False
+                if event.type == pygame.QUIT:
+                    return False
                 if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
                     waiting = False
         return True
