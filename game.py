@@ -1,5 +1,7 @@
 """Game logic and main game loop for Rabbit Adventure."""
 
+import cv2
+import mediapipe as mp
 import os
 import pygame
 import random
@@ -10,6 +12,72 @@ from level_loader import get_levels
 
 # Load levels from file with validation
 LEVELS = get_levels()
+GESTURE_COOLDOWN = 300
+FIST_HOLD_TIME = 700
+ZONE_LOW = 0.35
+ZONE_HIGH = 0.65
+
+def is_fist(hand_landmarks):
+    fingertips = [8, 12, 16, 20]
+    pip_joints = [6, 10, 14, 18]
+    folded = 0
+
+    for tip, pip in zip(fingertips, pip_joints):
+        if hand_landmarks[tip].y > hand_landmarks[pip].y:
+            folded += 1
+
+    return folded >= 4
+
+def process_camera_frame(cap, detector, gesture_state):
+    """Read one webcam frame, run hand detection, and show the preview."""
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        print("Warning: failed to read camera frame; skipping this frame")
+        cv2.waitKey(1)
+        return None, False
+
+    frame = cv2.flip(frame, 1)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    result = detector.detect(mp_image)
+
+    direction = None
+    now = pygame.time.get_ticks()
+    if result.hand_landmarks:
+        hand = result.hand_landmarks[0]
+        index_tip = hand[8]
+        height, width = frame.shape[:2]
+        index_coords = (int(index_tip.x * width), int(index_tip.y * height))
+        cv2.circle(frame, index_coords, 8, (0, 255, 0), -1)
+
+        if is_fist(hand):
+            if gesture_state["fist_started_at"] is None:
+                gesture_state["fist_started_at"] = now
+            if now - gesture_state["fist_started_at"] >= FIST_HOLD_TIME:
+                cv2.imshow("Camera Preview", frame)
+                cv2.waitKey(1)
+                return None, True
+        else:
+            gesture_state["fist_started_at"] = None
+            if now - gesture_state["last_move_at"] >= GESTURE_COOLDOWN:
+                if index_tip.y < ZONE_LOW:
+                    direction = "up"
+                elif index_tip.y > ZONE_HIGH:
+                    direction = "down"
+                elif index_tip.x < ZONE_LOW:
+                    direction = "left"
+                elif index_tip.x > ZONE_HIGH:
+                    direction = "right"
+
+                if direction is not None:
+                    gesture_state["last_move_at"] = now
+
+    else:
+        gesture_state["fist_started_at"] = None
+
+    cv2.imshow("Camera Preview", frame)
+    quit_requested = cv2.waitKey(1) & 0xFF == ord("q")
+    return direction, quit_requested
 
 class GameObject:
     def __init__(self, x, y, type):
@@ -35,7 +103,7 @@ def find_start_pos(level_map):
                 return x, y
     return 1, 1
 
-def run_game(level_index=0):
+def run_game(level_index=0, cap=None, detector=None):
     pygame.init()
     current_level = [list(row) for row in LEVELS[level_index]]
     map_width = len(current_level[0])
@@ -79,6 +147,41 @@ def run_game(level_index=0):
     coins = sum(row.count("C") for row in current_level)
     game_over = False
     won = False
+    gesture_state = {
+        "last_move_at": 0,
+        "fist_started_at": None,
+    }
+
+    def move_player(dx, dy, new_facing_direction):
+        nonlocal player_x, player_y, facing_direction, moves, coins, game_over, won, running
+
+        facing_direction = new_facing_direction
+        new_x, new_y = player_x + dx, player_y + dy
+        if 0 <= new_x < map_width and 0 <= new_y < map_height:
+            target = current_level[new_y][new_x]
+
+            # Check for logs in Level 2
+            on_log = False
+            for log in logs:
+                if log.x == new_x and log.y == new_y:
+                    on_log = True
+                    break
+
+            if target == '1' or target == 'R': # Wall or Rock
+                return
+            if target == 'W' and not on_log:
+                game_over = True # Drowned
+                return
+
+            player_x, player_y = new_x, new_y
+            moves += 1
+            if target == 'C':
+                current_level[player_y][player_x] = '0'
+                coins -= 1
+            elif target == 'E':
+                if coins == 0:
+                    won = True
+                    running = False
 
     while running:
         dt = clock.tick(10) # 10 FPS for simple movement
@@ -92,37 +195,27 @@ def run_game(level_index=0):
             
             if not game_over and event.type == pygame.KEYDOWN:
                 dx, dy = 0, 0
-                if event.key in [pygame.K_UP, pygame.K_w]: dy = -1; facing_direction = "up"
-                elif event.key in [pygame.K_DOWN, pygame.K_s]: dy = 1; facing_direction = "down"
-                elif event.key in [pygame.K_LEFT, pygame.K_a]: dx = -1; facing_direction = "left"
-                elif event.key in [pygame.K_RIGHT, pygame.K_d]: dx = 1; facing_direction = "right"
+                new_facing_direction = facing_direction
+                if event.key in [pygame.K_UP, pygame.K_w]: dy = -1; new_facing_direction = "up"
+                elif event.key in [pygame.K_DOWN, pygame.K_s]: dy = 1; new_facing_direction = "down"
+                elif event.key in [pygame.K_LEFT, pygame.K_a]: dx = -1; new_facing_direction = "left"
+                elif event.key in [pygame.K_RIGHT, pygame.K_d]: dx = 1; new_facing_direction = "right"
                 
                 if dx != 0 or dy != 0:
-                    new_x, new_y = player_x + dx, player_y + dy
-                    if 0 <= new_x < map_width and 0 <= new_y < map_height:
-                        target = current_level[new_y][new_x]
-                        
-                        # Check for logs in Level 2
-                        on_log = False
-                        for log in logs:
-                            if log.x == new_x and log.y == new_y:
-                                on_log = True
-                                break
-                        
-                        if target == '1' or target == 'R': # Wall or Rock
-                            pass # Can't move
-                        elif target == 'W' and not on_log:
-                            game_over = True # Drowned
-                        else:
-                            player_x, player_y = new_x, new_y
-                            moves += 1
-                            if target == 'C':
-                                current_level[player_y][player_x] = '0'
-                                coins -= 1
-                            elif target == 'E':
-                                if coins == 0:
-                                    won = True
-                                    running = False
+                    move_player(dx, dy, new_facing_direction)
+
+        if cap is not None and detector is not None:
+            gesture_direction, camera_quit = process_camera_frame(cap, detector, gesture_state)
+            if camera_quit:
+                return "quit"
+            if not game_over and gesture_direction == "up":
+                move_player(0, -1, "up")
+            elif not game_over and gesture_direction == "down":
+                move_player(0, 1, "down")
+            elif not game_over and gesture_direction == "left":
+                move_player(-1, 0, "left")
+            elif not game_over and gesture_direction == "right":
+                move_player(1, 0, "right")
         
         # Update Logs
         if level_index == 1:
@@ -231,7 +324,7 @@ def run_game(level_index=0):
                     if event.type == pygame.QUIT: return "quit"
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_r:
-                            return run_game(level_index)
+                            return run_game(level_index, cap, detector)
                         if event.key == pygame.K_ESCAPE:
                             return "menu"
 
@@ -239,7 +332,7 @@ def run_game(level_index=0):
 
     if won:
         if level_index + 1 < len(LEVELS):
-            return run_game(level_index + 1)
+            return run_game(level_index + 1, cap, detector)
         else:
             # Game Complete - Beautiful Win Screen
             # Create gradient background

@@ -1,5 +1,7 @@
 """Main entry point for Rabbit Adventure."""
 
+import cv2
+import mediapipe as mp
 import os
 import pygame
 from game import run_game
@@ -24,8 +26,8 @@ def show_intro(screen):
         waiting = True
         while waiting:
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    return False
+                # if event.type == pygame.QUIT:
+                #     return False
                 if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
                     waiting = False
         return True
@@ -34,39 +36,35 @@ def show_intro(screen):
         return True
 
 def main():
-    import cv2
-
-    # Open the default camera
-    cam = cv2.VideoCapture(0)
-    if not cam.isOpened():
-        print("Could not open camera")
-        exit(1)
-    
-    while True:
-
-        success, frame = cam.read()
-
-        if not success:
-            print("Could not capture frame")
-            break
-
-        cv2.imshow("Camera", frame)
-
-        if cv2.waitKey(1) == ord('q'):
-            break
-
-    cam.release()
-    cv2.destroyAllWindows()
     """Main function to start the game."""
-    
-    pygame.init()
-    screen = pygame.display.set_mode((960, 704)) # Matches 15x11 tiles of 64px
-    pygame.display.set_caption("Rabbit Adventure")
 
-    if show_intro(screen):
-        run_game(0) # Start from Level 1
-    
-    pygame.quit()
+    cap = cv2.VideoCapture(0)
+    detector = None
+
+    pygame.init()
+    try:
+        base_options = mp.tasks.BaseOptions(model_asset_path="hand_landmarker.task")
+        options = mp.tasks.vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=mp.tasks.vision.RunningMode.IMAGE,
+            num_hands=1,
+        )
+        detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
+
+        if not cap.isOpened():
+            print("Warning: camera did not open; game will run without camera input")
+
+        screen = pygame.display.set_mode((960, 704)) # Matches 15x11 tiles of 64px
+        pygame.display.set_caption("Rabbit Adventure")
+
+        if show_intro(screen):
+            run_game(0, cap if cap.isOpened() else None, detector) # Start from Level 1
+    finally:
+        if detector is not None:
+            detector.close()
+        cap.release()
+        cv2.destroyAllWindows()
+        pygame.quit()
 
 if __name__ == "__main__":
     main()
