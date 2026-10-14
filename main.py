@@ -1,10 +1,9 @@
 """Main entry point for Rabbit Adventure."""
 
 import cv2
-import mediapipe as mp
-import os
 import pygame
 from game import run_game
+from hand_tracking import HandTracker
 
 def show_intro(screen):
     """Show the game logo and wait for a key press."""
@@ -18,15 +17,17 @@ def show_intro(screen):
         screen.blit(logo, (screen.get_width()//2 - 300, screen.get_height()//2 - 300))
         
         font = pygame.font.SysFont("Arial", 32)
-        text = font.render("Press any key to start the adventure!", True, (0, 100, 0))
+        text = font.render("Press a key to start | Q to quit", True, (0, 100, 0))
         screen.blit(text, (screen.get_width()//2 - text.get_width()//2, screen.get_height() - 100))
         
         pygame.display.flip()
         
         waiting = True
+        clock = pygame.time.Clock()
         while waiting:
+            clock.tick(60)
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
                     return False
                 if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
                     waiting = False
@@ -38,31 +39,17 @@ def show_intro(screen):
 def main():
     """Main function to start the game."""
 
-    cap = cv2.VideoCapture(0)
-    detector = None
-
+    tracker = None
     pygame.init()
     try:
-        base_options = mp.tasks.BaseOptions(model_asset_path="hand_landmarker.task")
-        options = mp.tasks.vision.HandLandmarkerOptions(
-            base_options=base_options,
-            running_mode=mp.tasks.vision.RunningMode.IMAGE,
-            num_hands=1,
-        )
-        detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
-
-        if not cap.isOpened():
-            print("Warning: camera did not open; game will run without camera input")
-
-        screen = pygame.display.set_mode((960, 704)) # Matches 15x11 tiles of 64px
+        screen = pygame.display.set_mode((960, 704))
         pygame.display.set_caption("Rabbit Adventure")
-
         if show_intro(screen):
-            run_game(0, cap if cap.isOpened() else None, detector) # Start from Level 1
+            tracker = HandTracker().start()
+            run_game(0, tracker)
     finally:
-        if detector is not None:
-            detector.close()
-        cap.release()
+        if tracker is not None:
+            tracker.close()
         cv2.destroyAllWindows()
         pygame.quit()
 

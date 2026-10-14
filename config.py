@@ -1,21 +1,29 @@
 """Configuration constants for the so_long game."""
 
-TILE = 60  # Base tile size
-MAPS_FOLDER = "maps"
 TEXTURES_FOLDER = "textures"
 
-# Maximum window dimensions (to fit on most screens)
-MAX_WINDOW_WIDTH = 1920
-MAX_WINDOW_HEIGHT = 1080
-MIN_TILE_SIZE = 20  # Minimum tile size for very large maps
+# Rendering and gameplay timings (milliseconds unless noted)
+TARGET_FPS = 60
+MOVE_INTERVAL_MS = 150
+ANIMATION_MS = 120
+LOG_INTERVAL_MS = 500
+FOX_INTERVAL_MS = 450
+PORTAL_FOX_INTERVAL_MS = 600
+PORTAL_FOX_GRACE_MS = 1200
 
-# Colors
-BG_COLOR = (20, 20, 30)
-BUTTON_COLOR = (80, 120, 200)
-BUTTON_HOVER = (120, 160, 255)
-BUTTON_BORDER = (200, 220, 255)
-TEXT_COLOR = (255, 255, 255)
-TITLE_COLOR = (255, 215, 0)
-SUBTITLE_COLOR = (200, 200, 255)
-SHADOW_COLOR = (0, 0, 0)
+# Amber/blue warnings precede lethal lightning and tidal surges.
+LIGHTNING_SAFE_MS = 1800
+LIGHTNING_WARNING_MS = 900
+LIGHTNING_ACTIVE_MS = 600
+TIDE_SAFE_MS = 4200
+TIDE_WARNING_MS = 1200
+TIDE_ACTIVE_MS = 900
+PLANK_LIFETIME_MS = 900
 
+# Camera settings are requests; actual support depends on the webcam/backend.
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+CAMERA_FPS = 30
+TRACKING_STALE_MS = 250
+ZONE_LOW = 0.35
+ZONE_HIGH = 0.65

@@ -1,89 +1,32 @@
 """Game logic and main game loop for Rabbit Adventure."""
 
-import cv2
-import mediapipe as mp
-import os
 import pygame
-import random
-from config import TILE, MAPS_FOLDER
+from time import perf_counter
+
+from config import (TARGET_FPS, MOVE_INTERVAL_MS, ANIMATION_MS,
+                    LOG_INTERVAL_MS, FOX_INTERVAL_MS, PORTAL_FOX_INTERVAL_MS, PORTAL_FOX_GRACE_MS)
+from hand_tracking import now_ms
+from motion import AnimatedPosition, MoveRepeater
 from texture_loader import load_textures_with_size, create_player_textures
-from ui import draw_game
 from level_loader import get_levels
+from level_mechanics import LevelMechanics, PuzzleState, LEVEL_GUIDES, next_fox_position
+from hazards import HazardField
 
-# Load levels from file with validation
 LEVELS = get_levels()
-GESTURE_COOLDOWN = 300
-FIST_HOLD_TIME = 700
-ZONE_LOW = 0.35
-ZONE_HIGH = 0.65
-
-def is_fist(hand_landmarks):
-    fingertips = [8, 12, 16, 20]
-    pip_joints = [6, 10, 14, 18]
-    folded = 0
-
-    for tip, pip in zip(fingertips, pip_joints):
-        if hand_landmarks[tip].y > hand_landmarks[pip].y:
-            folded += 1
-
-    return folded >= 4
-
-def process_camera_frame(cap, detector, gesture_state):
-    """Read one webcam frame, run hand detection, and show the preview."""
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print("Warning: failed to read camera frame; skipping this frame")
-        cv2.waitKey(1)
-        return None, False
-
-    frame = cv2.flip(frame, 1)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    result = detector.detect(mp_image)
-
-    direction = None
-    now = pygame.time.get_ticks()
-    if result.hand_landmarks:
-        hand = result.hand_landmarks[0]
-        index_tip = hand[8]
-        height, width = frame.shape[:2]
-        index_coords = (int(index_tip.x * width), int(index_tip.y * height))
-        cv2.circle(frame, index_coords, 8, (0, 255, 0), -1)
-
-        if is_fist(hand):
-            if gesture_state["fist_started_at"] is None:
-                gesture_state["fist_started_at"] = now
-            if now - gesture_state["fist_started_at"] >= FIST_HOLD_TIME:
-                cv2.imshow("Camera Preview", frame)
-                cv2.waitKey(1)
-                return None, True
-        else:
-            gesture_state["fist_started_at"] = None
-            if now - gesture_state["last_move_at"] >= GESTURE_COOLDOWN:
-                if index_tip.y < ZONE_LOW:
-                    direction = "up"
-                elif index_tip.y > ZONE_HIGH:
-                    direction = "down"
-                elif index_tip.x < ZONE_LOW:
-                    direction = "left"
-                elif index_tip.x > ZONE_HIGH:
-                    direction = "right"
-
-                if direction is not None:
-                    gesture_state["last_move_at"] = now
-
-    else:
-        gesture_state["fist_started_at"] = None
-
-    cv2.imshow("Camera Preview", frame)
-    quit_requested = cv2.waitKey(1) & 0xFF == ord("q")
-    return direction, quit_requested
+DIRECTIONS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+KEY_DIRECTIONS = {
+    pygame.K_UP: "up", pygame.K_w: "up",
+    pygame.K_DOWN: "down", pygame.K_s: "down",
+    pygame.K_LEFT: "left", pygame.K_a: "left",
+    pygame.K_RIGHT: "right", pygame.K_d: "right",
+}
 
 class GameObject:
     def __init__(self, x, y, type):
         self.x = x
         self.y = y
         self.type = type
+        self.animation = AnimatedPosition(x, y, ANIMATION_MS)
 
 class Log(GameObject):
     def __init__(self, x, y, direction):
@@ -92,9 +35,10 @@ class Log(GameObject):
         self.timer = 0
 
 class Fox(GameObject):
-    def __init__(self, x, y):
+    def __init__(self, x, y, interval_ms=FOX_INTERVAL_MS, delay_ms=0):
         super().__init__(x, y, 'F')
-        self.timer = 0
+        self.interval_ms = interval_ms
+        self.timer = -delay_ms
 
 def find_start_pos(level_map):
     for y, row in enumerate(level_map):
@@ -103,7 +47,19 @@ def find_start_pos(level_map):
                 return x, y
     return 1, 1
 
-def run_game(level_index=0, cap=None, detector=None):
+def run_game(level_index=0, tracker=None):
+    """Reuse the same camera across levels and restarts without recursive loops."""
+    while True:
+        outcome = _run_level(level_index, tracker)
+        if outcome == "restart":
+            continue
+        if outcome == "next":
+            level_index += 1
+            continue
+        return outcome
+
+
+def _run_level(level_index, tracker):
     pygame.init()
     current_level = [list(row) for row in LEVELS[level_index]]
     map_width = len(current_level[0])
@@ -114,13 +70,17 @@ def run_game(level_index=0, cap=None, detector=None):
     height = map_height * tile_size
     
     screen = pygame.display.set_mode((width, height))
-    pygame.display.set_caption(f"Rabbit Adventure - Level {level_index + 1}")
+    title, hint = LEVEL_GUIDES[level_index] if level_index < len(LEVEL_GUIDES) else (
+        "Adventure", "Collect every carrot and reach the burrow.")
+    pygame.display.set_caption(f"Rabbit Adventure - Level {level_index + 1}: {title}")
     
     textures = load_textures_with_size(tile_size)
     player_textures = create_player_textures(textures)
     
     player_x, player_y = find_start_pos(current_level)
     current_level[player_y][player_x] = '0' # Clear start pos from map
+    mechanics = LevelMechanics(current_level)
+    puzzle_state = PuzzleState()
     
     # Initialize level specific objects
     logs = []
@@ -133,27 +93,49 @@ def run_game(level_index=0, cap=None, detector=None):
                     logs.append(Log(x, y, direction))
     
     foxes = []
-    if level_index == 2:
-        # Add a fox
-        foxes.append(Fox(map_width - 2, map_height - 2))
-        # Add some carrots for level 3
-        current_level[1][map_width-2] = 'C'
-        current_level[map_height-2][1] = 'C'
+    for y, row in enumerate(current_level):
+        for x, char in enumerate(row):
+            if char == 'F':
+                foxes.append(Fox(x, y, PORTAL_FOX_INTERVAL_MS if level_index == 4 else FOX_INTERVAL_MS,
+                                 PORTAL_FOX_GRACE_MS if level_index == 4 else 0))
+                current_level[y][x] = '0'
+    hazards = HazardField(level_index, current_level)
 
     clock = pygame.time.Clock()
-    running = True
     facing_direction = "right"
-    moves = 0
     coins = sum(row.count("C") for row in current_level)
     game_over = False
     won = False
-    gesture_state = {
-        "last_move_at": 0,
-        "fist_started_at": None,
-    }
+    player_animation = AnimatedPosition(player_x, player_y, ANIMATION_MS)
+    repeater = MoveRepeater(MOVE_INTERVAL_MS)
+    held_keys = []
+    show_metrics = False
+    metrics_font = pygame.font.SysFont("Arial", 18)
+    guide_font = pygame.font.SysFont("Arial", 18, bold=True)
+    hint_font = pygame.font.SysFont("Arial", 16)
+    danger_font = pygame.font.SysFont("Arial", 14, bold=True)
+    hint_text = hint_font.render(hint, True, (225, 240, 215))
+    hud = pygame.Surface((width, tile_size)).convert()
+    hud_signature = None
+    last_work_ms = 0.0
+    metrics_text = None
+    metrics_updated_at = 0
+
+    # Cache the map; redraw only tiles changed by carrots, gates, or planks.
+    background = pygame.Surface((width, height)).convert()
+
+    def redraw_tile(x, y):
+        background.blit(textures['0'], (x * tile_size, y * tile_size))
+        char = mechanics.texture_key((x, y), puzzle_state)
+        if char != '0':
+            background.blit(textures.get(char, textures['0']), (x * tile_size, y * tile_size))
+
+    for y, row in enumerate(current_level):
+        for x in range(len(row)):
+            redraw_tile(x, y)
 
     def move_player(dx, dy, new_facing_direction):
-        nonlocal player_x, player_y, facing_direction, moves, coins, game_over, won, running
+        nonlocal player_x, player_y, facing_direction, coins, game_over, won, puzzle_state
 
         facing_direction = new_facing_direction
         new_x, new_y = player_x + dx, player_y + dy
@@ -167,71 +149,107 @@ def run_game(level_index=0, cap=None, detector=None):
                     on_log = True
                     break
 
-            if target == '1' or target == 'R': # Wall or Rock
+            if mechanics.fragile.get((new_x, new_y), 0) & puzzle_state.collapsed:
+                game_over = True
+                return
+            if mechanics.blocked((new_x, new_y), puzzle_state):
                 return
             if target == 'W' and not on_log:
-                game_over = True # Drowned
+                game_over = True
                 return
 
-            player_x, player_y = new_x, new_y
-            moves += 1
+            origin = (player_x, player_y)
+            previous_state = puzzle_state
+            (player_x, player_y), puzzle_state = mechanics.enter(origin, (new_x, new_y), puzzle_state)
+            hazards.arrive((player_x, player_y))
+            teleported = (player_x, player_y) != (new_x, new_y)
+            player_animation.move_to(player_x, player_y, now, snap=teleported)
+            if previous_state.sun_open != puzzle_state.sun_open:
+                for gate in mechanics.gates:
+                    redraw_tile(*gate)
+            if previous_state.collapsed != puzzle_state.collapsed:
+                redraw_tile(*origin)
+            if hazards.deadly((player_x, player_y)) or any(
+                    (fox.x, fox.y) == (player_x, player_y) for fox in foxes):
+                game_over = True
+                return
+            target = current_level[player_y][player_x]
             if target == 'C':
                 current_level[player_y][player_x] = '0'
                 coins -= 1
+                redraw_tile(player_x, player_y)
             elif target == 'E':
                 if coins == 0:
                     won = True
-                    running = False
 
-    while running:
-        dt = clock.tick(10) # 10 FPS for simple movement
-        
+    while True:
+        dt = clock.tick(TARGET_FPS)
+        frame_started = perf_counter()
+        now = now_ms()
+        hazards.advance(dt)
+        if not won and hazards.deadly((player_x, player_y)):
+            game_over = True
+        pressed_direction = None
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
-            
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                return "quit"
-            
-            if not game_over and event.type == pygame.KEYDOWN:
-                dx, dy = 0, 0
-                new_facing_direction = facing_direction
-                if event.key in [pygame.K_UP, pygame.K_w]: dy = -1; new_facing_direction = "up"
-                elif event.key in [pygame.K_DOWN, pygame.K_s]: dy = 1; new_facing_direction = "down"
-                elif event.key in [pygame.K_LEFT, pygame.K_a]: dx = -1; new_facing_direction = "left"
-                elif event.key in [pygame.K_RIGHT, pygame.K_d]: dx = 1; new_facing_direction = "right"
-                
-                if dx != 0 or dy != 0:
-                    move_player(dx, dy, new_facing_direction)
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_q:
+                    return "quit"
+                if event.key == pygame.K_r:
+                    return "restart"
+                if event.key == pygame.K_F3:
+                    show_metrics = not show_metrics
+                if event.key in KEY_DIRECTIONS:
+                    if event.key not in held_keys:
+                        held_keys.append(event.key)
+                        pressed_direction = KEY_DIRECTIONS[event.key]
+            elif event.type == pygame.KEYUP and event.key in held_keys:
+                held_keys.remove(event.key)
+            elif event.type == pygame.WINDOWFOCUSLOST:
+                held_keys.clear()
+                pressed_direction = None
+                repeater.poll(None, now)
 
-        if cap is not None and detector is not None:
-            gesture_direction, camera_quit = process_camera_frame(cap, detector, gesture_state)
-            if camera_quit:
-                return "quit"
-            if not game_over and gesture_direction == "up":
-                move_player(0, -1, "up")
-            elif not game_over and gesture_direction == "down":
-                move_player(0, 1, "down")
-            elif not game_over and gesture_direction == "left":
-                move_player(-1, 0, "left")
-            elif not game_over and gesture_direction == "right":
-                move_player(1, 0, "right")
-        
+        # Reconcile held keys with actual state (e.g. a release while unfocused).
+        keys = pygame.key.get_pressed()
+        held_keys[:] = [key for key in held_keys if keys[key]]
+        for key in KEY_DIRECTIONS:
+            if keys[key] and key not in held_keys:
+                held_keys.append(key)
+        keyboard_direction = pressed_direction or (KEY_DIRECTIONS[held_keys[-1]] if held_keys else None)
+        state = tracker.snapshot(now) if tracker is not None else None
+        if tracker is not None and tracker.show_preview():
+            return "quit"
+        direction = keyboard_direction or (state.direction if state is not None else None)
+        step = repeater.poll(direction, now)
+        if step is not None and not game_over and not won:
+            move_player(*DIRECTIONS[step], step)
+        if won and now - player_animation.started_at >= ANIMATION_MS:
+            break
+
         # Update Logs
-        if level_index == 1:
+        if level_index == 1 and not game_over and not won:
             on_any_log = False
             for log in logs:
-                log.timer += 1
-                if log.timer >= 5: # Move every 5 frames
-                    log.timer = 0
+                log.timer += dt
+                while log.timer >= LOG_INTERVAL_MS:
+                    log.timer -= LOG_INTERVAL_MS
                     # If player is on this log, move player too
                     if player_x == log.x and player_y == log.y:
                         player_y += log.direction
+                        player_animation.move_to(player_x, player_y, now)
                     
                     log.y += log.direction
                     # Wrap around
-                    if log.y >= map_height - 1: log.y = 1
-                    elif log.y <= 0: log.y = map_height - 2
+                    wrapped = False
+                    if log.y >= map_height - 1:
+                        log.y = 1
+                        wrapped = True
+                    elif log.y <= 0:
+                        log.y = map_height - 2
+                        wrapped = True
+                    log.animation.move_to(log.x, log.y, now, snap=wrapped)
                 
                 if player_x == log.x and player_y == log.y:
                     on_any_log = True
@@ -243,45 +261,78 @@ def run_game(level_index=0, cap=None, detector=None):
             if player_y <= 0 or player_y >= map_height - 1:
                 game_over = True
 
-        # Update Foxes
-        if level_index == 2:
+        # Check contact before a fox moves, so stepping onto one is always fatal.
+        if foxes and not game_over and not won:
             for fox in foxes:
-                fox.timer += 1
-                if fox.timer >= 8: # Fox moves slower than rabbit
-                    fox.timer = 0
-                    # Simple AI: move towards player
-                    fdx = 1 if player_x > fox.x else -1 if player_x < fox.x else 0
-                    fdy = 1 if player_y > fox.y else -1 if player_y < fox.y else 0
-                    
-                    # Try moving horizontally first
-                    if fdx != 0 and current_level[fox.y][fox.x + fdx] not in ['1', 'R', 'E']:
-                        fox.x += fdx
-                    elif fdy != 0 and current_level[fox.y + fdy][fox.x] not in ['1', 'R', 'E']:
-                        fox.y += fdy
-                
-                if fox.x == player_x and fox.y == player_y:
+                if (fox.x, fox.y) == (player_x, player_y):
                     game_over = True
+                    break
+                fox.timer += dt
+                while fox.timer >= fox.interval_ms:
+                    fox.timer -= fox.interval_ms
+                    previous = (fox.x, fox.y)
+                    fox.x, fox.y = next_fox_position(
+                        current_level, previous, (player_x, player_y), mechanics,
+                        puzzle_state, use_portals=level_index == 4)
+                    teleported = abs(fox.x - previous[0]) + abs(fox.y - previous[1]) > 1
+                    fox.animation.move_to(fox.x, fox.y, now, snap=teleported)
+                    if (fox.x, fox.y) == (player_x, player_y):
+                        game_over = True
+                        break
+                if game_over:
+                    break
 
-        # Draw
-        screen.fill((0, 0, 0))
-        # Draw base map
-        for y, row in enumerate(current_level):
-            for x, char in enumerate(row):
-                screen.blit(textures['0'], (x * tile_size, y * tile_size)) # Grass background
-                if char != '0':
-                    screen.blit(textures.get(char, textures['0']), (x * tile_size, y * tile_size))
-        
-        # Draw logs
-        for log in logs:
-            screen.blit(textures['L'], (log.x * tile_size, log.y * tile_size))
-            
-        # Draw foxes
-        for fox in foxes:
-            screen.blit(textures['F'], (fox.x * tile_size, fox.y * tile_size))
-            
-        # Draw player
-        screen.blit(player_textures[facing_direction], (player_x * tile_size, player_y * tile_size))
-        
+        # Collision uses tile coordinates; drawing interpolates between them.
+        screen.blit(background, (0, 0))
+        hazards.draw(screen, textures, tile_size, mechanics, puzzle_state)
+        for obj in (*logs, *foxes):
+            draw_x, draw_y = obj.animation.position(now)
+            screen.blit(textures[obj.type], (round(draw_x * tile_size), round(draw_y * tile_size)))
+        draw_x, draw_y = player_animation.position(now)
+        screen.blit(player_textures[facing_direction],
+                    (round(draw_x * tile_size), round(draw_y * tile_size)))
+
+        # The guide occupies only the bottom boundary, never a playable tile.
+        danger_status = hazards.status((player_x, player_y))
+        if level_index == 4:
+            wake_in = max(0, PORTAL_FOX_GRACE_MS + PORTAL_FOX_INTERVAL_MS - hazards.elapsed)
+            danger_status = (f"Fox wakes in {wake_in / 1000:.1f}s" if wake_in else
+                             "One fox hunting - it can follow you through both portal pairs")
+        signature = (coins, puzzle_state.sun_open, danger_status)
+        if signature != hud_signature:
+            hud.fill((24, 48, 32))
+            status = f"{level_index + 1}/{len(LEVELS)}  {title}  |  Carrots: {coins}"
+            if mechanics.gates:
+                status += "  |  " + ("Sun OPEN / Moon CLOSED" if puzzle_state.sun_open
+                                        else "Sun CLOSED / Moon OPEN")
+            hud.blit(guide_font.render(status, True, (255, 235, 160)), (10, 6))
+            hud.blit(hint_text, (10, 27))
+            if danger_status:
+                hud.blit(danger_font.render(danger_status, True, (255, 180, 100)), (10, 46))
+            restart_text = hint_font.render("R: restart", True, (225, 240, 215))
+            hud.blit(restart_text, (width - restart_text.get_width() - 10, 6))
+            hud_signature = signature
+        screen.blit(hud, (0, height - tile_size))
+
+        if show_metrics:
+            if metrics_text is None or now - metrics_updated_at >= 250:
+                camera_stats = "Keyboard only"
+                if state is not None:
+                    age = f"{max(0, now - state.frame_at)} ms" if state.frame_at else "--"
+                    result_age = f"{max(0, now - state.result_at)} ms" if state.result_at else "--"
+                    latency = f"{state.latency_ms} ms" if state.latency_ms is not None else "--"
+                    camera_stats = (f"Camera {state.capture_fps:.0f} FPS | Frame age {age} | "
+                                    f"Tracking {latency} | Result age {result_age}")
+                lines = [f"Game {clock.get_fps():.0f} FPS | Frame {dt} ms | Work {last_work_ms:.1f} ms",
+                         camera_stats]
+                if state is not None:
+                    lines.append(state.status)
+                metrics_text = [metrics_font.render(line, True, (255, 255, 255), (20, 20, 20))
+                                for line in lines]
+                metrics_updated_at = now
+            for index, text in enumerate(metrics_text):
+                screen.blit(text, (6, 6 + index * 23))
+
         if game_over:
             overlay = pygame.Surface((width, height))
             overlay.set_alpha(180)
@@ -310,7 +361,7 @@ def run_game(level_index=0, cap=None, detector=None):
             font_sub = pygame.font.SysFont("Arial", 28)
             
             text_title = font_title.render("Game Over!", True, (255, 255, 255))
-            text_sub = font_sub.render("Press R to Restart", True, (255, 200, 200))
+            text_sub = font_sub.render("R: Restart    Q: Quit", True, (255, 200, 200))
             
             # Center text in box
             screen.blit(text_title, (width//2 - text_title.get_width()//2, box_y + 50))
@@ -320,19 +371,23 @@ def run_game(level_index=0, cap=None, detector=None):
             
             waiting = True
             while waiting:
+                clock.tick(TARGET_FPS)
+                if tracker is not None and tracker.show_preview():
+                    return "quit"
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT: return "quit"
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_r:
-                            return run_game(level_index, cap, detector)
-                        if event.key == pygame.K_ESCAPE:
-                            return "menu"
+                            return "restart"
+                        if event.key == pygame.K_q:
+                            return "quit"
 
         pygame.display.flip()
+        last_work_ms = (perf_counter() - frame_started) * 1000
 
     if won:
         if level_index + 1 < len(LEVELS):
-            return run_game(level_index + 1, cap, detector)
+            return "next"
         else:
             # Game Complete - Beautiful Win Screen
             # Create gradient background
@@ -365,21 +420,19 @@ def run_game(level_index=0, cap=None, detector=None):
             # Render victory text
             font_title = pygame.font.SysFont("Arial", 72, bold=True)
             font_sub = pygame.font.SysFont("Arial", 36)
-            font_detail = pygame.font.SysFont("Arial", 24)
             
             text_title = font_title.render("YOU WIN!", True, (0, 100, 0))
-            text_sub = font_sub.render("Congratulations!", True, (34, 139, 34))
-            # text_detail = font_detail.render("All levels completed!", True, (50, 150, 50))
+            text_sub = font_sub.render("Press Q to quit", True, (34, 139, 34))
             
             # Center text in box
             screen.blit(text_title, (width//2 - text_title.get_width()//2, box_y + 60))
             screen.blit(text_sub, (width//2 - text_sub.get_width()//2, box_y + 150))
-            # screen.blit(text_detail, (width//2 - text_detail.get_width()//2, box_y + 210))
             
             pygame.display.flip()
-            pygame.time.wait(3000)
-            return "menu"
-
-def select_map(screen):
-    # For this version, we start from level 1
-    return "start"
+            while True:
+                clock.tick(TARGET_FPS)
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
+                        return "quit"
+                if tracker is not None and tracker.show_preview():
+                    return "quit"

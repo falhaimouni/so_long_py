@@ -51,7 +51,7 @@ def is_map_surrounded_by_walls(game_map):
 
 def validate_map_characters(game_map):
     """Check if map contains only valid characters and has exactly 1 P, 1 E, and at least 1 C."""
-    valid_chars = {"1", "0", "E", "P", "C", "W", "L", "F", "R"}  # Added W, L, F, R for special levels
+    valid_chars = {"1", "0", "E", "P", "C", "W", "L", "F", "R", "S", "G", "H", "A", "B", "U", "V", "X", "T"}
     coin_count = 0
     player_count = 0
     exit_count = 0
@@ -80,55 +80,15 @@ def validate_map_characters(game_map):
     if coin_count == 0:
         return False, "Map must contain at least one collectible (C)"
     
+    # Each portal label is unique and must have its matching endpoint.
+    for first, second in (("A", "B"), ("U", "V")):
+        counts = [sum(row.count(label) for row in game_map) for label in (first, second)]
+        if counts not in ([0, 0], [1, 1]):
+            return False, f"Portals {first}/{second} require exactly one endpoint each"
+    if any("G" in row or "H" in row for row in game_map) and not any("S" in row for row in game_map):
+        return False, "Gate puzzles require a switch (S)"
+
     return True, f"Map is valid with {coin_count} collectible(s)"
-
-
-def has_valid_path(game_map, start_x, start_y, targets):
-    """Check if there's a valid path from start position to all targets using BFS."""
-    if not targets:
-        return True
-    
-    height = len(game_map)
-    width = len(game_map[0])
-    
-    # BFS to find all reachable positions
-    queue = [(start_x, start_y)]
-    visited = set()
-    visited.add((start_x, start_y))
-    found_targets = set()
-    
-    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # down, up, right, left
-    
-    while queue:
-        x, y = queue.pop(0)
-        
-        # Check if current position is a target
-        if (x, y) in targets:
-            found_targets.add((x, y))
-            # If we found all targets, we can return early
-            if len(found_targets) == len(targets):
-                return True
-        
-        # Explore neighbors
-        for dx, dy in directions:
-            new_x, new_y = x + dx, y + dy
-            
-            # Check bounds
-            if new_x < 0 or new_x >= width or new_y < 0 or new_y >= height:
-                continue
-            
-            # Check if already visited
-            if (new_x, new_y) in visited:
-                continue
-            
-            # Check if it's a walkable tile (not a wall)
-            cell = game_map[new_y][new_x]
-            if cell != "1":  # Can walk on floor, collectibles, exit, or player position
-                visited.add((new_x, new_y))
-                queue.append((new_x, new_y))
-    
-    # Check if we found all targets
-    return len(found_targets) == len(targets)
 
 
 def validate_map(game_map):
