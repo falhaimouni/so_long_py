@@ -14,8 +14,8 @@ The project also includes an OpenCV + MediaPipe hand-tracking control mode using
 - Independent camera capture and asynchronous hand tracking
 - Keyboard controls (tap or hold to move)
 - Webcam preview with MediaPipe hand detection
-- Index-finger zone controls
-- Closed fist pauses movement; hand gestures never quit the game
+- Rotation-aware pointing gestures with smoothing and stable turns
+- Open palm or closed fist stops movement; hand gestures never quit the game
 
 ## Requirements
 
@@ -56,19 +56,18 @@ Keyboard:
 
 Hand tracking:
 
-- Point with your index finger.
-- Move your fingertip into a camera zone:
-  - top zone: move up
-  - bottom zone: move down
-  - left zone: move left
-  - right zone: move right
-  - center zone: no movement
-- Close your fist to pause movement. Hand gestures cannot quit the game.
+- Extend your index finger and curl the other fingers, like pointing.
+- Point **up, down, left, or right in the camera view** to move that way. Your hand can stay wherever it is comfortable; there are no screen zones to reach.
+- Open your hand or close your fist to stop immediately.
+- Keep your hand visible, with your index finger pointing across the image rather than directly toward the lens.
 
-The webcam frame is mirrored with `cv2.flip(frame, 1)`, so the controls feel natural like looking into a mirror.
-The center rest area spans the middle 40% of the preview in both directions.
-Labeled zones highlight the active direction, and a yellow marker follows your
-fingertip with its current direction. The top and bottom zones include the corners.
+The mirrored camera preview draws your hand skeleton and a smoothed direction
+arrow. Green indicates active movement; yellow indicates rest or a gesture settling.
+It shows the recognized gesture and current direction, with instructions below.
+Finger recognition uses joint geometry, so turning your hand does not reverse the
+fist check. A time-based filter reduces jitter, a 30 ms stability check confirms
+new directions, and hysteresis prevents rapid turns near diagonals. Lost tracking
+stops movement and requires a fresh stable gesture when your hand returns.
 
 ## Levels
 
@@ -160,8 +159,8 @@ Tune these constants in `config.py`:
 | --- | --- | --- |
 | `TARGET_FPS` | 60 | Rendering target |
 | `GAMEPLAY_TIME_SCALE` | 2.8 | Multiplies all gameplay durations; increase for a slower game |
-| `MOVE_INTERVAL_MS` | 420 | Minimum interval between keyboard/hand moves |
-| `ANIMATION_MS` | 336 | Time to animate a tile movement |
+| `MOVE_INTERVAL_MS` | 360 | Minimum interval between keyboard/hand moves |
+| `ANIMATION_MS` | 360 | Time to animate a tile movement |
 | `LOG_INTERVAL_MS` | 1400 | Log movement interval |
 | `FOX_INTERVAL_MS` | 1260 | Level 3 fox movement interval |
 | `PORTAL_FOX_INTERVAL_MS` | 1680 | Level 5 fox movement interval |
@@ -172,14 +171,17 @@ Tune these constants in `config.py`:
 | `CAMERA_WIDTH`, `CAMERA_HEIGHT` | 640, 480 | Requested camera resolution |
 | `CAMERA_FPS` | 30 | Requested capture rate and target inference submission rate |
 | `TRACKING_STALE_MS` | 250 | Stop using older tracking results |
+| `GESTURE_SMOOTHING_MS` | 45 | Time constant for pointing-vector smoothing |
+| `GESTURE_SETTLE_MS` | 30 | Confirm a stable gesture before starting or turning |
+| `GESTURE_AXIS_HYSTERESIS` | 1.25 | Keep the current axis near diagonal pointing |
 
-Gameplay runs at about 36% of its original speed, with matching slower hazard
-timers. Rendering and camera capture keep their normal rates.
+Hazards run at about 36% of their original speed. Player steps run slightly
+faster, with animation filling the whole movement interval so held movement
+flows continuously. Rendering and camera capture keep their normal rates.
 
 Keyboard input takes priority over hand input. The first move activates immediately,
 then every move respects the movement interval, even when changing direction or
-briefly releasing a gesture. Releasing the key, returning your finger to
-the center, or losing tracking stops repeated movement. Collisions still use tile
+briefly releasing a gesture. Releasing the key, opening your hand, or losing tracking stops repeated movement. Collisions still use tile
 coordinates; animation changes the displayed position between tiles. Wrapped logs
 appear at their destination rather than sliding across the entire river.
 

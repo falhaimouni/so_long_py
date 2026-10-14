@@ -16,15 +16,24 @@ from unittest.mock import patch
 import pygame
 
 import game
-from hand_tracking import HandTracker, TrackingSnapshot
+from hand_tracking import HandTracker, TrackingSnapshot, GestureController, draw_control_preview
 from motion import AnimatedPosition, MoveRepeater
 from config import FOX_INTERVAL_MS, LOG_INTERVAL_MS, MOVE_INTERVAL_MS
 
 
-def hand_result(x=0.8, y=0.5, fist=False):
-    hand = [SimpleNamespace(x=x, y=y) for _ in range(21)]
-    for tip, pip in zip((8, 12, 16, 20), (6, 10, 14, 18)):
-        hand[pip].y = y - 0.1 if fist else y + 0.1
+def hand_result(direction="right", fist=False, open_palm=False, offset=(0, 0), scale=1):
+    # A palm with fingers curled toward their bases, rotated in camera space.
+    coords = [(0, 0)] * 21
+    coords[0] = (0, 0.18)
+    for base, x in zip((5, 9, 13, 17), (-0.08, -0.025, 0.035, 0.09)):
+        straight = (base == 5 and not fist) or open_palm
+        coords[base:base + 4] = [(x, 0), (x, -0.06),
+                                 (x, -0.11 if straight else -0.03),
+                                 (x, -0.17 if straight else 0.02)]
+    rotations = {"up": (1, 0), "right": (0, 1), "down": (-1, 0), "left": (0, -1)}
+    c, t = rotations[direction]
+    hand = [SimpleNamespace(x=0.5 + offset[0] + scale * (c*x - t*y) / (640/480),
+                            y=0.5 + offset[1] + scale * (t*x + c*y)) for x, y in coords]
     return SimpleNamespace(hand_landmarks=[hand])
 
 
@@ -70,6 +79,7 @@ class TrackingTests(unittest.TestCase):
             self.tracker._on_result(result, None, timestamp)
 
     def test_direction_expires_and_empty_result_stops_movement(self):
+        self.publish(hand_result(), 930)
         self.publish(hand_result(), 1000)
         self.assertEqual(self.tracker.snapshot(1100).direction, "right")
         self.assertEqual(self.tracker.snapshot(1100).latency_ms, 10)
@@ -85,6 +95,7 @@ class TrackingTests(unittest.TestCase):
             self.assertIsNone(state.direction)
             self.assertFalse(hasattr(state, "quit_requested"))
             self.assertFalse(self.tracker._stop.is_set())
+        self.publish(hand_result(), 5030)
         self.publish(hand_result(), 5100)
         self.assertEqual(self.tracker.snapshot(5100).direction, "right")
 
@@ -160,6 +171,71 @@ class TrackingTests(unittest.TestCase):
             submitted = [call.args[1] for call in create.return_value.detect_async.call_args_list]
             self.assertEqual(submitted, timestamps)
 
+
+
+class GestureTests(unittest.TestCase):
+    def test_pointing_works_in_all_directions_at_different_positions_and_sizes(self):
+        for direction in ("up", "down", "left", "right"):
+            for offset, scale in (((0, 0), 1), ((0.2, -0.15), 0.6), ((-0.15, 0.1), 1.4)):
+                with self.subTest(direction=direction, offset=offset, scale=scale):
+                    controller = GestureController()
+                    hand = hand_result(direction, offset=offset, scale=scale).hand_landmarks[0]
+                    self.assertIsNone(controller.update(hand, 1000)[0])
+                    self.assertEqual(controller.update(hand, 1070)[0], direction)
+
+    def test_open_hand_fist_and_lost_hand_stop_immediately(self):
+        for stop in (hand_result(fist=True).hand_landmarks[0],
+                     hand_result(open_palm=True).hand_landmarks[0], None):
+            controller = GestureController()
+            hand = hand_result().hand_landmarks[0]
+            controller.update(hand, 1000)
+            self.assertEqual(controller.update(hand, 1070)[0], "right")
+            self.assertIsNone(controller.update(stop, 1080)[0])
+            self.assertIsNone(controller.update(hand, 1090)[0])
+
+    def test_brief_wrong_direction_does_not_turn_and_sustained_turn_does(self):
+        controller = GestureController()
+        right = hand_result().hand_landmarks[0]
+        up = hand_result("up").hand_landmarks[0]
+        controller.update(right, 1000)
+        self.assertEqual(controller.update(right, 1070)[0], "right")
+        self.assertEqual(controller.update(up, 1100)[0], "right")
+        self.assertEqual(controller.update(right, 1130)[0], "right")
+        for timestamp in range(1160, 1401, 30):
+            direction = controller.update(up, timestamp)[0]
+        self.assertEqual(direction, "up")
+
+    def test_long_detection_gap_requires_a_fresh_stable_gesture(self):
+        controller = GestureController()
+        hand = hand_result().hand_landmarks[0]
+        controller.update(hand, 1000)
+        self.assertEqual(controller.update(hand, 1070)[0], "right")
+        self.assertIsNone(controller.update(hand, 1500)[0])
+
+    def test_diagonal_noise_keeps_current_axis(self):
+        controller = GestureController()
+        hand = hand_result().hand_landmarks[0]
+        controller.update(hand, 1000)
+        controller.update(hand, 1070)
+        # Rotate a right-pointing hand slightly past 45 degrees, inside hysteresis.
+        from math import cos, sin, radians
+        angle = radians(-48)
+        for point in hand:
+            x, y = (point.x - 0.5) * (640/480), point.y - 0.5
+            point.x = 0.5 + (x*cos(angle) - y*sin(angle)) / (640/480)
+            point.y = 0.5 + x*sin(angle) + y*cos(angle)
+        for timestamp in range(1100, 1401, 30):
+            self.assertEqual(controller.update(hand, timestamp)[0], "right")
+
+    def test_preview_draws_detected_hand_and_arrow(self):
+        hand = hand_result().hand_landmarks[0]
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        state = TrackingSnapshot(status="Camera active", direction="right", gesture="Pointing",
+                                 landmarks=tuple((p.x, p.y) for p in hand), vector=(1, 0))
+        preview = draw_control_preview(frame, state)
+        self.assertEqual(preview.shape, frame.shape)
+        self.assertTrue(preview[150:350].any())
+        self.assertFalse(frame.any())
 
 
 class GameLoopTests(unittest.TestCase):

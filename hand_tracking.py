@@ -5,6 +5,7 @@ landmarker; callbacks publish small snapshots under a lock, never game state.
 """
 
 from dataclasses import dataclass, replace
+from math import exp, hypot
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -13,29 +14,81 @@ import cv2
 import mediapipe as mp
 
 from config import (CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, TRACKING_STALE_MS,
-                    ZONE_LOW, ZONE_HIGH)
+                    GESTURE_SMOOTHING_MS, GESTURE_SETTLE_MS,
+                    GESTURE_AXIS_HYSTERESIS)
 
 
 def now_ms():
     return int(monotonic() * 1000)
 
 
-def is_fist(hand):
-    return all(hand[tip].y > hand[pip].y
-               for tip, pip in zip((8, 12, 16, 20), (6, 10, 14, 18)))
+# Explicit connections keep drawing independent of MediaPipe's legacy solutions API.
+HAND_CONNECTIONS = ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6),
+                    (6, 7), (7, 8), (5, 9), (9, 10), (10, 11), (11, 12),
+                    (9, 13), (13, 14), (14, 15), (15, 16), (13, 17),
+                    (0, 17), (17, 18), (18, 19), (19, 20))
 
 
-def hand_direction(hand):
-    tip = hand[8]
-    if tip.y < ZONE_LOW:
-        return "up"
-    if tip.y > ZONE_HIGH:
-        return "down"
-    if tip.x < ZONE_LOW:
-        return "left"
-    if tip.x > ZONE_HIGH:
-        return "right"
-    return None
+def finger_extended(hand, base, joint, tip, aspect):
+    """Recognize straight fingers geometrically, regardless of hand rotation."""
+    a = ((hand[base].x - hand[joint].x) * aspect, hand[base].y - hand[joint].y)
+    b = ((hand[tip].x - hand[joint].x) * aspect, hand[tip].y - hand[joint].y)
+    lengths = hypot(*a) * hypot(*b)
+    if lengths < 1e-6:
+        return False
+    cosine = (a[0] * b[0] + a[1] * b[1]) / lengths
+    return cosine < -0.65 and hypot(*b) > hypot(*a) * 0.45
+
+
+class GestureController:
+    """Smooth a pointing vector and debounce turns; stop gestures act immediately."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.vector = None
+        self.last_at = 0
+        self.direction = self.candidate = None
+        self.candidate_at = 0
+
+    def update(self, hand, timestamp, aspect=CAMERA_WIDTH / CAMERA_HEIGHT):
+        if not hand:
+            self.reset()
+            return None, "No hand", None
+        extended = [finger_extended(hand, base, base + 1, base + 3, aspect)
+                    for base in (5, 9, 13, 17)]
+        if not extended[0] or any(extended[1:]):
+            self.reset()
+            gesture = "Fist / rest" if not any(extended) else "Open hand / rest"
+            return None, gesture, None
+        dx = (hand[8].x - hand[5].x) * aspect
+        dy = hand[8].y - hand[5].y
+        length = hypot(dx, dy)
+        if length < 0.025:
+            self.reset()
+            return None, "Point across the camera", None
+        vector = (dx / length, dy / length)
+        if self.vector is None or timestamp - self.last_at > TRACKING_STALE_MS:
+            self.reset()
+            self.vector = vector
+        else:
+            alpha = 1 - exp(-max(1, timestamp - self.last_at) / GESTURE_SMOOTHING_MS)
+            self.vector = tuple(old + alpha * (new - old)
+                                for old, new in zip(self.vector, vector))
+        self.last_at = timestamp
+        x, y = self.vector
+        horizontal = abs(x) > abs(y)
+        # Keep the current axis near diagonals instead of flickering between turns.
+        if self.direction in ("left", "right") and abs(y) < abs(x) * GESTURE_AXIS_HYSTERESIS:
+            horizontal = True
+        elif self.direction in ("up", "down") and abs(x) < abs(y) * GESTURE_AXIS_HYSTERESIS:
+            horizontal = False
+        candidate = ("right" if x > 0 else "left") if horizontal else ("down" if y > 0 else "up")
+        if candidate != self.candidate:
+            self.candidate, self.candidate_at = candidate, timestamp
+        if timestamp - self.candidate_at >= GESTURE_SETTLE_MS:
+            self.direction = candidate
+        return self.direction, "Pointing", self.vector
 
 
 @dataclass(frozen=True)
@@ -47,60 +100,47 @@ class TrackingSnapshot:
     frame_at: int = 0
     capture_fps: float = 0.0
     status: str = "Starting camera"
+    landmarks: tuple = ()
+    gesture: str = "No hand"
+    vector: tuple | None = None
 
 
 def draw_control_preview(frame, state):
-    """Show the same direction zones used by hand_direction on the mirrored frame."""
+    """Render detected geometry and gesture feedback on the mirrored camera."""
     preview = frame.copy()
     height, width = preview.shape[:2]
-    left, right = int(width * ZONE_LOW), int(width * ZONE_HIGH)
-    top, bottom = int(height * ZONE_LOW), int(height * ZONE_HIGH)
-    # Vertical directions take priority in the corners, matching hand_direction.
-    zones = {
-        "up": (0, 0, width - 1, top),
-        "down": (0, bottom, width - 1, height - 1),
-        "left": (0, top, left, bottom),
-        "right": (right, top, width - 1, bottom),
-        "center": (left, top, right, bottom),
-    }
-    active = state.direction or ("center" if state.tip is not None and
-                                ZONE_LOW <= state.tip[0] <= ZONE_HIGH and
-                                ZONE_LOW <= state.tip[1] <= ZONE_HIGH else None)
-    if active in zones:
-        x1, y1, x2, y2 = zones[active]
-        tint = preview.copy()
-        cv2.rectangle(tint, (x1, y1), (x2, y2), (80, 190, 80), -1)
-        cv2.addWeighted(tint, 0.2, preview, 0.8, 0, dst=preview)
+    color = (90, 240, 120) if state.direction else (0, 210, 255)
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    def point(landmark):
+        return (int(landmark[0] * width), int(landmark[1] * height))
 
-    def label(text, x, y, scale=0.65, color=(255, 255, 255)):
-        cv2.putText(preview, text, (x, y), font, scale, (15, 15, 15), 4, cv2.LINE_AA)
-        cv2.putText(preview, text, (x, y), font, scale, color, 1, cv2.LINE_AA)
+    if state.landmarks:
+        points = [point(p) for p in state.landmarks]
+        for a, b in HAND_CONNECTIONS:
+            cv2.line(preview, points[a], points[b], color, 2, cv2.LINE_AA)
+        for p in points:
+            cv2.circle(preview, p, 4, (255, 255, 255), -1, cv2.LINE_AA)
+        if state.vector is not None:
+            origin = points[5]
+            vx, vy = state.vector
+            end = (int(origin[0] + vx * 90), int(origin[1] + vy * 90))
+            cv2.arrowedLine(preview, origin, end, color, 4, cv2.LINE_AA, tipLength=0.25)
+            cv2.circle(preview, points[8], 9, color, 2, cv2.LINE_AA)
 
-    cv2.line(preview, (0, top), (width - 1, top), (220, 220, 220), 1)
-    cv2.line(preview, (0, bottom), (width - 1, bottom), (220, 220, 220), 1)
-    for x in (left, right):
-        cv2.line(preview, (x, top), (x, bottom), (220, 220, 220), 1)
-    for direction, (x1, y1, x2, y2) in zones.items():
-        text = "CENTER / REST" if direction == "center" else direction.upper()
-        text_width = cv2.getTextSize(text, font, 0.65, 1)[0][0]
-        color = (100, 255, 100) if direction == active else (255, 255, 255)
-        label(text, max(4, (x1 + x2 - text_width) // 2), (y1 + y2) // 2 + 8,
-              color=color)
+    overlay = preview.copy()
+    cv2.rectangle(overlay, (0, 0), (width, 78), (20, 28, 24), -1)
+    cv2.rectangle(overlay, (0, height - 56), (width, height), (20, 28, 24), -1)
+    cv2.addWeighted(overlay, 0.8, preview, 0.2, 0, dst=preview)
 
-    if state.tip is not None:
-        x = max(0, min(width - 1, int(state.tip[0] * width)))
-        y = max(0, min(height - 1, int(state.tip[1] * height)))
-        cv2.circle(preview, (x, y), 12, (15, 15, 15), 3)
-        cv2.circle(preview, (x, y), 10, (0, 255, 255), 2)
-        cv2.circle(preview, (x, y), 3, (0, 255, 255), -1)
-        text = "FINGER: " + (state.direction.upper() if state.direction else "REST")
-        text_width = cv2.getTextSize(text, font, 0.55, 1)[0][0]
-        label(text, max(4, min(x + 16, width - text_width - 4)),
-              max(22, min(y - 16, height - 8)), scale=0.55, color=(0, 255, 255))
-    else:
-        label("No finger detected", 12, 28, scale=0.55)
+    def label(text, y, scale=0.6, tint=(255, 255, 255)):
+        cv2.putText(preview, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    scale, tint, 1, cv2.LINE_AA)
+
+    action = state.direction.upper() if state.direction else "STOP"
+    label("MOVE " + action, 30, 0.8, color)
+    label(state.gesture if state.status == "Camera active" else state.status, 60, 0.55)
+    label("Point index finger UP / DOWN / LEFT / RIGHT", height - 33, 0.52)
+    label("Curl other fingers. Open hand or fist = stop. Q = quit", height - 12, 0.48)
     return preview
 
 
@@ -114,6 +154,7 @@ class HandTracker:
         self._frame = None
         self._thread = Thread(target=self._capture, name="hand-camera", daemon=True)
         self._preview_at = 0
+        self._gestures = GestureController()
 
     def start(self):
         self._thread.start()
@@ -125,7 +166,8 @@ class HandTracker:
             state = self._snapshot
         if (self._stop.is_set() or state.status != "Camera active" or not state.result_at
                 or timestamp_ms - state.result_at > TRACKING_STALE_MS):
-            return replace(state, direction=None, tip=None)
+            return replace(state, direction=None, tip=None, landmarks=(),
+                           vector=None, gesture="No hand" if state.status == "Camera active" else state.status)
         return state
 
     def _on_result(self, result, output_image, timestamp_ms):
@@ -133,14 +175,14 @@ class HandTracker:
             previous = self._snapshot
             if self._stop.is_set() or previous.status != "Camera active":
                 return
-            direction, tip = None, None
-            if result.hand_landmarks:
-                hand = result.hand_landmarks[0]
-                tip = (hand[8].x, hand[8].y)
-                # A closed hand pauses movement; gestures never request shutdown.
-                if not is_fist(hand):
-                    direction = hand_direction(hand)
+            hand = result.hand_landmarks[0] if result.hand_landmarks else None
+            aspect = (self._frame.shape[1] / self._frame.shape[0]
+                      if self._frame is not None else CAMERA_WIDTH / CAMERA_HEIGHT)
+            direction, gesture, vector = self._gestures.update(hand, timestamp_ms, aspect)
+            tip = (hand[8].x, hand[8].y) if hand else None
+            landmarks = tuple((p.x, p.y) for p in hand) if hand else ()
             self._snapshot = replace(previous, direction=direction, tip=tip,
+                                     landmarks=landmarks, gesture=gesture, vector=vector,
                                      result_at=timestamp_ms,
                                      latency_ms=max(0, now_ms() - timestamp_ms))
 
@@ -157,7 +199,9 @@ class HandTracker:
             options = mp.tasks.vision.HandLandmarkerOptions(
                 base_options=mp.tasks.BaseOptions(model_asset_path=self.model_path),
                 running_mode=mp.tasks.vision.RunningMode.LIVE_STREAM,
-                num_hands=1, result_callback=self._on_result)
+                num_hands=1, min_hand_detection_confidence=0.6,
+                min_hand_presence_confidence=0.6, min_tracking_confidence=0.6,
+                result_callback=self._on_result)
             detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
             last_timestamp = 0
             next_submission = 0.0

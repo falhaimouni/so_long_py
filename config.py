@@ -6,8 +6,9 @@ TEXTURES_FOLDER = "textures"
 TARGET_FPS = 60
 # Give hand gestures time to settle while preserving the relative game pace.
 GAMEPLAY_TIME_SCALE = 2.8
-MOVE_INTERVAL_MS = round(150 * GAMEPLAY_TIME_SCALE)
-ANIMATION_MS = round(120 * GAMEPLAY_TIME_SCALE)
+# Slightly quicker player steps; animation fills each interval for continuous motion.
+MOVE_INTERVAL_MS = round(150 * GAMEPLAY_TIME_SCALE * 6 / 7)
+ANIMATION_MS = MOVE_INTERVAL_MS
 LOG_INTERVAL_MS = round(500 * GAMEPLAY_TIME_SCALE)
 FOX_INTERVAL_MS = round(450 * GAMEPLAY_TIME_SCALE)
 PORTAL_FOX_INTERVAL_MS = round(600 * GAMEPLAY_TIME_SCALE)
@@ -27,5 +28,7 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 TRACKING_STALE_MS = 250
-ZONE_LOW = 0.30
-ZONE_HIGH = 0.70
+# Time-based vector filtering and turn confirmation reduce landmark jitter.
+GESTURE_SMOOTHING_MS = 45
+GESTURE_SETTLE_MS = 30
+GESTURE_AXIS_HYSTERESIS = 1.25
