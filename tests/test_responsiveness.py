@@ -18,7 +18,7 @@ import pygame
 import game
 from hand_tracking import HandTracker, TrackingSnapshot
 from motion import AnimatedPosition, MoveRepeater
-from config import FOX_INTERVAL_MS
+from config import FOX_INTERVAL_MS, LOG_INTERVAL_MS, MOVE_INTERVAL_MS
 
 
 def hand_result(x=0.8, y=0.5, fist=False):
@@ -34,11 +34,20 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(repeat.poll("right", 1000), "right")
         self.assertIsNone(repeat.poll("right", 1149))
         self.assertEqual(repeat.poll("right", 1150), "right")
-        self.assertEqual(repeat.poll("up", 1160), "up")
+        self.assertIsNone(repeat.poll("up", 1160))
         self.assertIsNone(repeat.poll(None, 1170))
-        self.assertEqual(repeat.poll("up", 1171), "up")
+        self.assertIsNone(repeat.poll("up", 1171))
+        self.assertEqual(repeat.poll("up", 1300), "up")
         self.assertEqual(repeat.poll("up", 5000), "up")
         self.assertIsNone(repeat.poll("up", 5000))
+
+    def test_gesture_jitter_cannot_bypass_movement_interval(self):
+        repeat = MoveRepeater(MOVE_INTERVAL_MS)
+        self.assertEqual(repeat.poll("right", 0), "right")
+        for timestamp in range(10, MOVE_INTERVAL_MS, 10):
+            direction = ("up", None, "right")[timestamp // 10 % 3]
+            self.assertIsNone(repeat.poll(direction, timestamp))
+        self.assertEqual(repeat.poll("left", MOVE_INTERVAL_MS), "left")
 
     def test_interpolation_retargets_without_jump_and_wrap_snaps(self):
         position = AnimatedPosition(1, 1, 120)
@@ -197,7 +206,7 @@ class GameLoopTests(unittest.TestCase):
 
         def events():
             timestamp = frame[0] * dt
-            if timestamp >= 1100:
+            if timestamp >= 2 * max(LOG_INTERVAL_MS, FOX_INTERVAL_MS) + dt:
                 return [pygame.event.Event(pygame.QUIT)]
             result = []
             if frame[0] == 1:
@@ -205,7 +214,7 @@ class GameLoopTests(unittest.TestCase):
                 if hold:
                     key_state[pygame.K_RIGHT] = True
                     result.append(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT))
-            if timestamp >= 500:
+            if timestamp >= 4 * MOVE_INTERVAL_MS:
                 key_state[pygame.K_RIGHT] = False
             return result
 
@@ -213,7 +222,7 @@ class GameLoopTests(unittest.TestCase):
         if gesture:
             tracker = SimpleNamespace(
                 show_preview=lambda: False,
-                snapshot=lambda now: TrackingSnapshot(direction="right" if now < 500 else None,
+                snapshot=lambda now: TrackingSnapshot(direction="right" if now < 4 * MOVE_INTERVAL_MS else None,
                                                        status="Camera active"))
         with patch("game.AnimatedPosition", RecordedPosition), \
              patch("game.pygame.time.Clock", Clock), \
@@ -229,7 +238,7 @@ class GameLoopTests(unittest.TestCase):
                 player, = self.simulate(**options)
                 self.assertEqual([(x, y) for x, y, _, _ in player.moves],
                                  [(2, 1), (3, 1), (4, 1), (5, 1)])
-                self.assertTrue(all(b[2] - a[2] >= 150
+                self.assertTrue(all(b[2] - a[2] >= MOVE_INTERVAL_MS
                                     for a, b in zip(player.moves, player.moves[1:])))
 
     def test_hazards_keep_intervals_at_different_render_rates(self):
@@ -239,8 +248,8 @@ class GameLoopTests(unittest.TestCase):
                 self.assertEqual(len(logs), 6)
                 for log in logs:
                     self.assertEqual(len(log.moves), 2)
-                    self.assertGreaterEqual(log.moves[0][2], 500)
-                    self.assertGreaterEqual(log.moves[1][2], 1000)
+                    self.assertGreaterEqual(log.moves[0][2], LOG_INTERVAL_MS)
+                    self.assertGreaterEqual(log.moves[1][2], 2 * LOG_INTERVAL_MS)
                 fox, player = self.simulate(level=2, dt=dt)
                 self.assertEqual(len(fox.moves), 2)
                 self.assertGreaterEqual(fox.moves[0][2], FOX_INTERVAL_MS)

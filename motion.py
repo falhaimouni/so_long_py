@@ -8,12 +8,11 @@ class MoveRepeater:
         self.next_move_at = 0
 
     def poll(self, direction, now_ms):
-        """Move immediately on activation/change, then repeat without catch-up bursts."""
-        changed = direction != self.direction
+        """Move immediately at first, then limit every step, including direction changes."""
         self.direction = direction
         if direction is None:
             return None
-        if changed or now_ms >= self.next_move_at:
+        if now_ms >= self.next_move_at:
             self.next_move_at = now_ms + self.interval_ms
             return direction
         return None

@@ -5,7 +5,8 @@ from functools import lru_cache
 from heapq import heappop, heappush
 from itertools import count
 
-from config import FOX_INTERVAL_MS, PORTAL_FOX_INTERVAL_MS, PORTAL_FOX_GRACE_MS
+from config import (FOX_INTERVAL_MS, PORTAL_FOX_INTERVAL_MS, PORTAL_FOX_GRACE_MS,
+                    MOVE_INTERVAL_MS)
 from hazards import deadly_tile, LIGHTNING_CYCLE_MS, TIDE_CYCLE_MS
 from level_mechanics import LevelMechanics, PuzzleState, next_fox_position
 
@@ -76,11 +77,12 @@ def solve(grid, level):
     def transition(node, action):
         position, state, collected, foxes, elapsed, plank_age = node
         foxes = list(foxes)
-        # Game updates at 50 ms; issue one directional action every 150 ms.
+        # Three simulated updates per move, using the configured gameplay pace.
+        dt = MOVE_INTERVAL_MS // 3
         for substep in range(3):
-            elapsed += 50
+            elapsed += dt
             x, y = position
-            plank_age = plank_age + 50 if grid[y][x] == "X" else 0
+            plank_age = plank_age + dt if grid[y][x] == "X" else 0
             if deadly_tile(level, grid[y][x], position, elapsed, plank_age):
                 return None
             if substep == 2 and action is not None:

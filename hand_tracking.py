@@ -49,6 +49,61 @@ class TrackingSnapshot:
     status: str = "Starting camera"
 
 
+def draw_control_preview(frame, state):
+    """Show the same direction zones used by hand_direction on the mirrored frame."""
+    preview = frame.copy()
+    height, width = preview.shape[:2]
+    left, right = int(width * ZONE_LOW), int(width * ZONE_HIGH)
+    top, bottom = int(height * ZONE_LOW), int(height * ZONE_HIGH)
+    # Vertical directions take priority in the corners, matching hand_direction.
+    zones = {
+        "up": (0, 0, width - 1, top),
+        "down": (0, bottom, width - 1, height - 1),
+        "left": (0, top, left, bottom),
+        "right": (right, top, width - 1, bottom),
+        "center": (left, top, right, bottom),
+    }
+    active = state.direction or ("center" if state.tip is not None and
+                                ZONE_LOW <= state.tip[0] <= ZONE_HIGH and
+                                ZONE_LOW <= state.tip[1] <= ZONE_HIGH else None)
+    if active in zones:
+        x1, y1, x2, y2 = zones[active]
+        tint = preview.copy()
+        cv2.rectangle(tint, (x1, y1), (x2, y2), (80, 190, 80), -1)
+        cv2.addWeighted(tint, 0.2, preview, 0.8, 0, dst=preview)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def label(text, x, y, scale=0.65, color=(255, 255, 255)):
+        cv2.putText(preview, text, (x, y), font, scale, (15, 15, 15), 4, cv2.LINE_AA)
+        cv2.putText(preview, text, (x, y), font, scale, color, 1, cv2.LINE_AA)
+
+    cv2.line(preview, (0, top), (width - 1, top), (220, 220, 220), 1)
+    cv2.line(preview, (0, bottom), (width - 1, bottom), (220, 220, 220), 1)
+    for x in (left, right):
+        cv2.line(preview, (x, top), (x, bottom), (220, 220, 220), 1)
+    for direction, (x1, y1, x2, y2) in zones.items():
+        text = "CENTER / REST" if direction == "center" else direction.upper()
+        text_width = cv2.getTextSize(text, font, 0.65, 1)[0][0]
+        color = (100, 255, 100) if direction == active else (255, 255, 255)
+        label(text, max(4, (x1 + x2 - text_width) // 2), (y1 + y2) // 2 + 8,
+              color=color)
+
+    if state.tip is not None:
+        x = max(0, min(width - 1, int(state.tip[0] * width)))
+        y = max(0, min(height - 1, int(state.tip[1] * height)))
+        cv2.circle(preview, (x, y), 12, (15, 15, 15), 3)
+        cv2.circle(preview, (x, y), 10, (0, 255, 255), 2)
+        cv2.circle(preview, (x, y), 3, (0, 255, 255), -1)
+        text = "FINGER: " + (state.direction.upper() if state.direction else "REST")
+        text_width = cv2.getTextSize(text, font, 0.55, 1)[0][0]
+        label(text, max(4, min(x + 16, width - text_width - 4)),
+              max(22, min(y - 16, height - 8)), scale=0.55, color=(0, 255, 255))
+    else:
+        label("No finger detected", 12, 28, scale=0.55)
+    return preview
+
+
 class HandTracker:
     def __init__(self, camera_index=0, model_path=None):
         self.camera_index = camera_index
@@ -165,14 +220,8 @@ class HandTracker:
         with self._lock:
             frame, frame_at = self._frame, self._snapshot.frame_at
         if frame is not None and frame_at != self._preview_at:
-            preview = frame.copy()
             state = self.snapshot()
-            height, width = preview.shape[:2]
-            cv2.rectangle(preview, (int(width * ZONE_LOW), int(height * ZONE_LOW)),
-                          (int(width * ZONE_HIGH), int(height * ZONE_HIGH)), (200, 200, 200), 1)
-            if state.tip is not None:
-                cv2.circle(preview, (int(state.tip[0] * width), int(state.tip[1] * height)),
-                           8, (0, 255, 0), -1)
+            preview = draw_control_preview(frame, state)
             cv2.imshow("Camera Preview", preview)
             self._preview_at = frame_at
         return (cv2.waitKey(1) & 0xFF) in (ord("q"), ord("Q")) if frame is not None else False

@@ -16,7 +16,8 @@ from level_mechanics import LevelMechanics, PuzzleState
 from map_validator import validate_map
 from hazard_routes import solve
 from hazards import deadly_tile, hazard_phase
-from config import PLANK_LIFETIME_MS
+from config import (PLANK_LIFETIME_MS, MOVE_INTERVAL_MS, LIGHTNING_SAFE_MS,
+                    LIGHTNING_WARNING_MS, TIDE_SAFE_MS, TIDE_WARNING_MS)
 from level_mechanics import next_fox_position
 
 
@@ -71,6 +72,7 @@ class NewLevelTests(unittest.TestCase):
         self.assertFalse(validate_map(grid)[0])
 
     def replay(self, index, route, expect_death=False):
+        dt = MOVE_INTERVAL_MS // 3
         frame = [0]
         death_seen = [False]
         victory_at = [None]
@@ -79,10 +81,10 @@ class NewLevelTests(unittest.TestCase):
         class Clock:
             def tick(self, fps):
                 frame[0] += 1
-                return 50
+                return dt
 
             def get_fps(self):
-                return 20
+                return 1000 / dt
 
         def gesture(timestamp=None):
             step = frame[0] // 3 - 1
@@ -96,7 +98,7 @@ class NewLevelTests(unittest.TestCase):
                 if surface.get_at(sample)[:3] == (255, 255, 150):
                     if victory_at[0] is None:
                         victory_at[0] = frame[0]
-                    if frame[0] - victory_at[0] >= 80:  # Wait 4s; no automatic victory exit.
+                    if (frame[0] - victory_at[0]) * dt >= 4000:
                         victory_quit[0] = True
                         return [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_q)]
             if expect_death and frame[0] > 1 and surface is not None:
@@ -113,7 +115,7 @@ class NewLevelTests(unittest.TestCase):
         with patch("game.pygame.time.Clock", Clock), \
              patch("game.pygame.event.get", side_effect=events), \
              patch("game.pygame.key.get_pressed", return_value=defaultdict(bool)), \
-             patch("game.now_ms", side_effect=lambda: frame[0] * 50):
+             patch("game.now_ms", side_effect=lambda: frame[0] * dt):
             outcome = game._run_level(index, tracker)
         if expect_death:
             self.assertTrue(death_seen[0], f"Level {index + 1} did not kill the rabbit")
@@ -142,9 +144,10 @@ class NewLevelTests(unittest.TestCase):
                 print(f"Level {index + 1}: survived {len(route)} timed hand actions (including waits)")
 
     def test_storm_warns_then_kills_a_rabbit_that_stays_in_a_lane(self):
-        self.assertEqual(hazard_phase(3, "T", (1, 5), 1800)[0], "warning")
-        self.assertFalse(deadly_tile(3, "T", (1, 5), 2699))
-        self.assertTrue(deadly_tile(3, "T", (1, 5), 2700))
+        strike_at = LIGHTNING_SAFE_MS + LIGHTNING_WARNING_MS
+        self.assertEqual(hazard_phase(3, "T", (1, 5), LIGHTNING_SAFE_MS)[0], "warning")
+        self.assertFalse(deadly_tile(3, "T", (1, 5), strike_at - 1))
+        self.assertTrue(deadly_tile(3, "T", (1, 5), strike_at))
         self.replay(3, self.prefix_to_tile(3, "T"), expect_death=True)
 
     def test_foxes_follow_portals_and_catch_an_idle_rabbit(self):
@@ -162,10 +165,11 @@ class NewLevelTests(unittest.TestCase):
         self.replay(5, self.prefix_to_tile(5, "X"), expect_death=True)
 
     def test_tidal_wave_warns_before_killing_on_bridges(self):
-        self.assertEqual(hazard_phase(5, "X", (6, 2), 4200)[0], "warning")
-        self.assertFalse(deadly_tile(5, "X", (6, 2), 5399, 0))
-        self.assertTrue(deadly_tile(5, "X", (6, 2), 5400, 0))
-        self.assertFalse(deadly_tile(5, "0", (5, 2), 5400, 0))
+        wave_at = TIDE_SAFE_MS + TIDE_WARNING_MS
+        self.assertEqual(hazard_phase(5, "X", (6, 2), TIDE_SAFE_MS)[0], "warning")
+        self.assertFalse(deadly_tile(5, "X", (6, 2), wave_at - 1, 0))
+        self.assertTrue(deadly_tile(5, "X", (6, 2), wave_at, 0))
+        self.assertFalse(deadly_tile(5, "0", (5, 2), wave_at, 0))
 
 
 if __name__ == "__main__":
