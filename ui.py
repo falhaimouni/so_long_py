@@ -75,22 +75,23 @@ def fullscreen():
 
 
 @lru_cache(maxsize=4)
+def background_art(filename, size):
+    art = pygame.image.load(str(ROOT / 'textures' / 'woodland' / filename)).convert()
+    scale = max(size[0] / art.get_width(), size[1] / art.get_height())
+    art = pygame.transform.smoothscale(art, (round(art.get_width()*scale), round(art.get_height()*scale)))
+    cropped = pygame.Surface(size)
+    cropped.blit(art, ((size[0]-art.get_width())//2, (size[1]-art.get_height())//2))
+    return cropped
+
+
+@lru_cache(maxsize=4)
 def title_art(size):
-    path = ROOT / 'textures' / 'woodland' / 'title-day.png'
-    if path.exists():
-        art = pygame.image.load(str(path)).convert()
-        scale = max(size[0] / art.get_width(), size[1] / art.get_height())
-        art = pygame.transform.smoothscale(art, (round(art.get_width()*scale), round(art.get_height()*scale)))
-        cropped = pygame.Surface(size)
-        cropped.blit(art, ((size[0]-art.get_width())//2, (size[1]-art.get_height())//2))
-    else:
-        cropped = pygame.Surface(size)
-        cropped.fill(INK)
+    art = background_art('title-day.png', size).copy()
     shade = pygame.Surface(size, pygame.SRCALPHA)
     for x in range(size[0]):
-        pygame.draw.line(shade, (*(226, 224, 193), round(235 * (1-x/size[0])**1.8)), (x, 0), (x, size[1]))
-    cropped.blit(shade, (0, 0))
-    return cropped
+        pygame.draw.line(shade, (226, 224, 193, round(235 * (1-x/size[0])**1.8)), (x, 0), (x, size[1]))
+    art.blit(shade, (0, 0))
+    return art
 
 
 def title_screen(screen):
@@ -163,7 +164,7 @@ def title_screen(screen):
                     instructions = True
 
 
-def draw_hud(screen, level, total, title, coins, initial_coins, danger, gate):
+def draw_hud(screen, level, total, title, hint, coins, initial_coins, danger, gate):
     """Keep the board central, with only a slim header and a short hint."""
     screen.fill(INK)
     panel(screen, pygame.Rect(160, 22, 960, 56))
@@ -171,13 +172,7 @@ def draw_hud(screen, level, total, title, coins, initial_coins, danger, gate):
     text(screen, title, (290, 35), 23, serif=True)
     collected = initial_coins - coins
     text(screen, f'Carrots  {collected} / {initial_coins}', (946, 39), 17, MINT)
-    hints = ('Collect the carrots, then find the burrow.',
-             'Cross the river on the moving logs.',
-             'Collect the carrots. Stay ahead of the fox.',
-             'Step on switches to swap gates. Avoid lightning.',
-             'Matching portals connect the gardens. The fox can follow.',
-             'Cross the planks quickly. Watch for waves.')
-    instruction = 'All carrots collected! Head to the burrow.' if coins == 0 else hints[level]
+    instruction = 'All carrots collected! Head to the burrow.' if coins == 0 else hint
     rendered = font(16).render(instruction, True, (249, 242, 217))
     screen.blit(rendered, rendered.get_rect(center=(640, 824)))
     status = '  /  '.join(part for part in (gate, danger) if part)
@@ -188,21 +183,8 @@ def draw_hud(screen, level, total, title, coins, initial_coins, danger, gate):
     screen.blit(rendered, rendered.get_rect(center=(640, 879)))
 
 
-@lru_cache(maxsize=4)
-def ending_art(size):
-    path = ROOT / 'textures' / 'woodland' / 'ending.png'
-    if not path.exists():
-        return title_art(size).copy()
-    art = pygame.image.load(str(path)).convert()
-    scale = max(size[0]/art.get_width(), size[1]/art.get_height())
-    art = pygame.transform.smoothscale(art, (round(art.get_width()*scale),round(art.get_height()*scale)))
-    surface = pygame.Surface(size)
-    surface.blit(art, ((size[0]-art.get_width())//2,(size[1]-art.get_height())//2))
-    return surface
-
-
 def draw_happy_ending(screen, stats, elapsed):
-    screen.blit(ending_art(screen.get_size()), (0,0))
+    screen.blit(background_art('ending.png', screen.get_size()), (0,0))
     w, h = screen.get_size()
     # Petals drift through the scene; the success screen stays alive until input.
     for i in range(32):
@@ -260,18 +242,19 @@ def modal(screen, kind, title, copy, stats='', tracker=None):
     second = pygame.Rect(box.x+348, box.bottom-93, 282, 56)
     started_at = pygame.time.get_ticks()
     while True:
-        screen.blit(frozen, (0, 0))
-        panel(screen, box)
-        text(screen, {'pause': 'TAKE A BREATHER', 'lost': 'THE FOREST HAS ANOTHER CHANCE', 'next': 'TRIAL COMPLETE', 'complete': 'ALL SIX TRIALS COMPLETE'}[kind], (box.x+48, box.y+37), 13, GOLD)
-        text(screen, title, (box.x+48, box.y+84), 40, serif=True)
-        wrapped(screen, copy, (box.x+48, box.y+159), 580, 18)
-        text(screen, stats, (box.x+48, box.y+258), 16, MINT)
-        mouse = pygame.mouse.get_pos()
-        button(screen, first, primary_label, hover=first.collidepoint(mouse))
-        button(screen, second, 'Back to title', False, second.collidepoint(mouse))
-        text(screen, 'ENTER  Continue     M Title     Q  Exit', (box.x+170, box.bottom+22), 13, (241,234,206))
         if kind == 'complete':
             first, second = draw_happy_ending(screen, stats, (pygame.time.get_ticks()-started_at)/1000)
+        else:
+            screen.blit(frozen, (0, 0))
+            panel(screen, box)
+            text(screen, {'pause': 'TAKE A BREATHER', 'lost': 'THE FOREST HAS ANOTHER CHANCE', 'next': 'TRIAL COMPLETE', 'complete': 'ALL SIX TRIALS COMPLETE'}[kind], (box.x+48, box.y+37), 13, GOLD)
+            text(screen, title, (box.x+48, box.y+84), 40, serif=True)
+            wrapped(screen, copy, (box.x+48, box.y+159), 580, 18)
+            text(screen, stats, (box.x+48, box.y+258), 16, MINT)
+            mouse = pygame.mouse.get_pos()
+            button(screen, first, primary_label, hover=first.collidepoint(mouse))
+            button(screen, second, 'Back to title', False, second.collidepoint(mouse))
+            text(screen, 'ENTER  Continue     M Title     Q  Exit', (box.x+170, box.bottom+22), 13, (241,234,206))
         pygame.display.flip()
         clock.tick(60)
         if tracker is not None and tracker.show_preview():

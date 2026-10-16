@@ -94,11 +94,8 @@ class GestureController:
 @dataclass(frozen=True)
 class TrackingSnapshot:
     direction: str | None = None
-    tip: tuple | None = None
     result_at: int = 0
-    latency_ms: int | None = None
     frame_at: int = 0
-    capture_fps: float = 0.0
     status: str = "Starting camera"
     landmarks: tuple = ()
     gesture: str = "No hand"
@@ -166,7 +163,7 @@ class HandTracker:
             state = self._snapshot
         if (self._stop.is_set() or state.status != "Camera active" or not state.result_at
                 or timestamp_ms - state.result_at > TRACKING_STALE_MS):
-            return replace(state, direction=None, tip=None, landmarks=(),
+            return replace(state, direction=None, landmarks=(),
                            vector=None, gesture="No hand" if state.status == "Camera active" else state.status)
         return state
 
@@ -179,12 +176,10 @@ class HandTracker:
             aspect = (self._frame.shape[1] / self._frame.shape[0]
                       if self._frame is not None else CAMERA_WIDTH / CAMERA_HEIGHT)
             direction, gesture, vector = self._gestures.update(hand, timestamp_ms, aspect)
-            tip = (hand[8].x, hand[8].y) if hand else None
             landmarks = tuple((p.x, p.y) for p in hand) if hand else ()
-            self._snapshot = replace(previous, direction=direction, tip=tip,
+            self._snapshot = replace(previous, direction=direction,
                                      landmarks=landmarks, gesture=gesture, vector=vector,
-                                     result_at=timestamp_ms,
-                                     latency_ms=max(0, now_ms() - timestamp_ms))
+                                     result_at=timestamp_ms)
 
     def _capture(self):
         cap = detector = None
@@ -206,15 +201,13 @@ class HandTracker:
             last_timestamp = 0
             next_submission = 0.0
             submission_interval = 1000 / CAMERA_FPS
-            fps_started = monotonic()
-            frames = failures = 0
+            failures = 0
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     failures += 1
                     with self._lock:
                         self._snapshot = replace(self._snapshot, direction=None,
-                                                 tip=None,
                                                  result_at=0, status="Camera read failed")
                     if failures >= 10:
                         raise RuntimeError("camera stopped delivering frames")
@@ -224,16 +217,10 @@ class HandTracker:
                 timestamp = max(now_ms(), last_timestamp + 1)
                 last_timestamp = timestamp
                 frame = cv2.flip(frame, 1)
-                frames += 1
-                elapsed = monotonic() - fps_started
                 with self._lock:
                     self._frame = frame
                     self._snapshot = replace(self._snapshot, frame_at=timestamp,
                                              status="Camera active")
-                    if elapsed >= 1:
-                        self._snapshot = replace(self._snapshot, capture_fps=frames / elapsed)
-                if elapsed >= 1:
-                    fps_started, frames = monotonic(), 0
                 # Drain capture continuously, targeting CAMERA_FPS. MediaPipe
                 # drops submissions while busy, so no queue of stale frames develops.
                 # Allow 1 ms for integer timestamp rounding at e.g. 30 FPS.

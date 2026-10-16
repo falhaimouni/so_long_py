@@ -1,7 +1,5 @@
 """Configuration constants for the so_long game."""
 
-TEXTURES_FOLDER = "textures"
-
 # Rendering and gameplay timings (milliseconds unless noted)
 TARGET_FPS = 60
 # Give hand gestures time to settle while preserving the relative game pace.

@@ -1,7 +1,6 @@
 """Game logic and main game loop for Rabbit Adventure."""
 
 import pygame
-from time import perf_counter
 
 from config import (TARGET_FPS, MOVE_INTERVAL_MS, ANIMATION_MS,
                     LOG_INTERVAL_MS, FOX_INTERVAL_MS, PORTAL_FOX_INTERVAL_MS, PORTAL_FOX_GRACE_MS)
@@ -123,15 +122,10 @@ def _run_level(level_index, tracker):
     player_animation = AnimatedPosition(player_x, player_y, ANIMATION_MS)
     repeater = MoveRepeater(MOVE_INTERVAL_MS)
     held_keys = []
-    show_metrics = False
-    metrics_font = pygame.font.SysFont("Arial", 18)
     initial_coins = coins
     moves = 0
     feedback = Feedback()
     elapsed_ms = 0
-    last_work_ms = 0.0
-    metrics_text = None
-    metrics_updated_at = 0
 
     # Cache the map; redraw only tiles changed by carrots, gates, or planks.
     background = pygame.Surface((width, height)).convert()
@@ -198,7 +192,6 @@ def _run_level(level_index, tracker):
 
     while True:
         dt = clock.tick(TARGET_FPS)
-        frame_started = perf_counter()
         now = now_ms()
         elapsed_ms += dt
         hazards.advance(dt)
@@ -227,8 +220,6 @@ def _run_level(level_index, tracker):
                     repeater = MoveRepeater(MOVE_INTERVAL_MS)
                     clock.tick(TARGET_FPS)
                     now = now_ms()
-                if event.key == pygame.K_F3:
-                    show_metrics = not show_metrics
                 if event.key in KEY_DIRECTIONS:
                     if event.key not in held_keys:
                         held_keys.append(event.key)
@@ -347,29 +338,10 @@ def _run_level(level_index, tracker):
         gate_status = ''
         if mechanics.gates:
             gate_status = 'Sun gates open / Moon gates closed' if puzzle_state.sun_open else 'Moon gates open / Sun gates closed'
-        draw_hud(screen, level_index, len(LEVELS), title, coins, initial_coins,
+        draw_hud(screen, level_index, len(LEVELS), title, hint, coins, initial_coins,
                  danger_status, gate_status)
         panel(screen, pygame.Rect(156, 94, width+8, height+8))
         screen.blit(board, (160, 98))
-
-        if show_metrics:
-            if metrics_text is None or now - metrics_updated_at >= 250:
-                camera_stats = "Keyboard only"
-                if state is not None:
-                    age = f"{max(0, now - state.frame_at)} ms" if state.frame_at else "--"
-                    result_age = f"{max(0, now - state.result_at)} ms" if state.result_at else "--"
-                    latency = f"{state.latency_ms} ms" if state.latency_ms is not None else "--"
-                    camera_stats = (f"Camera {state.capture_fps:.0f} FPS | Frame age {age} | "
-                                    f"Tracking {latency} | Result age {result_age}")
-                lines = [f"Game {clock.get_fps():.0f} FPS | Frame {dt} ms | Work {last_work_ms:.1f} ms",
-                         camera_stats]
-                if state is not None:
-                    lines.append(state.status)
-                metrics_text = [metrics_font.render(line, True, (255, 255, 255), (20, 20, 20))
-                                for line in lines]
-                metrics_updated_at = now
-            for index, text in enumerate(metrics_text):
-                screen.blit(text, (6, 6 + index * 23))
 
         if game_over:
             feedback.play('lost')
@@ -378,7 +350,6 @@ def _run_level(level_index, tracker):
                          f'{initial_coins-coins} / {initial_coins} carrots   /   {moves} steps   /   {elapsed_ms/1000:.1f}s', tracker)
 
         pygame.display.flip()
-        last_work_ms = (perf_counter() - frame_started) * 1000
 
     if won:
         feedback.play('win')

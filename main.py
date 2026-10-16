@@ -6,16 +6,12 @@ from hand_tracking import HandTracker
 from ui import create_display, title_screen
 
 
-def show_intro(screen):
-    return title_screen(screen)
-
-
 def main():
     tracker = None
     pygame.init()
     try:
         screen = create_display()
-        while show_intro(screen):
+        while title_screen(screen):
             if tracker is None:
                 tracker = HandTracker().start()
             outcome = run_game(0, tracker)

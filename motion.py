@@ -4,12 +4,10 @@
 class MoveRepeater:
     def __init__(self, interval_ms):
         self.interval_ms = interval_ms
-        self.direction = None
         self.next_move_at = 0
 
     def poll(self, direction, now_ms):
         """Move immediately at first, then limit every step, including direction changes."""
-        self.direction = direction
         if direction is None:
             return None
         if now_ms >= self.next_move_at:

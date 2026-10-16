@@ -2,17 +2,16 @@
 
 from collections import deque
 from dataclasses import dataclass
-from config import PLANK_LIFETIME_MS
 
 
 PORTAL_PAIRS = (("A", "B"), ("U", "V"))
 LEVEL_GUIDES = (
-    ("Carrot Trail", "Collect every carrot, then reach the burrow."),
-    ("River Ride", "Ride the logs across the river. Water without a log is dangerous."),
-    ("Fox Forest", "The fox is faster now. Collect carrots and keep moving."),
-    ("Storm Switchyard", "Swap gates and cross storm lanes. Lightning strikes are lethal."),
-    ("Portal Hunt", "One fox follows you through portals. Check the next garden before you jump."),
-    ("Sinking Causeway", f"Water KILLS. Planks sink in {PLANK_LIFETIME_MS / 1000:g}s. Reach an island before the tidal wave."),
+    ('Carrot Trail', 'Collect the carrots, then find the burrow.'),
+    ('River Ride', 'Cross the river on the moving logs.'),
+    ('Fox Forest', 'Collect the carrots. Stay ahead of the fox.'),
+    ('Storm Switchyard', 'Step on switches to swap gates. Avoid lightning.'),
+    ('Portal Hunt', 'Matching portals connect the gardens. The fox can follow.'),
+    ('Sinking Causeway', 'Cross the planks quickly. Watch for waves.'),
 )
 
 
