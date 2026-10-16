@@ -12,9 +12,13 @@ pip install pygame opencv-python mediapipe
 python3 main.py
 ```
 
-A webcam enables hand controls. Keyboard controls remain available if the camera
-cannot open. Keep `hand_landmarker.task`, `levels.txt`, and `textures/` with the
+A webcam enables hand controls. Its live preview and hand overlay appear beside
+the board inside the game window. Keyboard controls remain available if the
+camera cannot open. Keep `hand_landmarker.task`, `levels.txt`, and `textures/` with the
 Python source files.
+
+Fullscreen renders at the display's native resolution. Text, game tiles, and the
+webcam panel resize directly from their sources when the window size changes.
 
 ## Controls
 

@@ -1,6 +1,6 @@
 """Independent webcam capture with asynchronous, latest-result hand tracking.
 
-Only the main thread displays windows. The capture thread owns the camera and
+Only the main thread renders the embedded preview. The capture thread owns the camera and
 landmarker; callbacks publish small snapshots under a lock, never game state.
 """
 
@@ -12,6 +12,7 @@ from time import monotonic
 
 import cv2
 import mediapipe as mp
+import pygame
 
 from config import (CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, TRACKING_STALE_MS,
                     GESTURE_SMOOTHING_MS, GESTURE_SETTLE_MS,
@@ -124,20 +125,6 @@ def draw_control_preview(frame, state):
             cv2.arrowedLine(preview, origin, end, color, 4, cv2.LINE_AA, tipLength=0.25)
             cv2.circle(preview, points[8], 9, color, 2, cv2.LINE_AA)
 
-    overlay = preview.copy()
-    cv2.rectangle(overlay, (0, 0), (width, 78), (20, 28, 24), -1)
-    cv2.rectangle(overlay, (0, height - 56), (width, height), (20, 28, 24), -1)
-    cv2.addWeighted(overlay, 0.8, preview, 0.2, 0, dst=preview)
-
-    def label(text, y, scale=0.6, tint=(255, 255, 255)):
-        cv2.putText(preview, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    scale, tint, 1, cv2.LINE_AA)
-
-    action = state.direction.upper() if state.direction else "STOP"
-    label("MOVE " + action, 30, 0.8, color)
-    label(state.gesture if state.status == "Camera active" else state.status, 60, 0.55)
-    label("Point index finger UP / DOWN / LEFT / RIGHT", height - 33, 0.52)
-    label("Curl other fingers. Open hand or fist = stop. Q = quit", height - 12, 0.48)
     return preview
 
 
@@ -150,7 +137,8 @@ class HandTracker:
         self._snapshot = TrackingSnapshot()
         self._frame = None
         self._thread = Thread(target=self._capture, name="hand-camera", daemon=True)
-        self._preview_at = 0
+        self._preview_key = None
+        self._preview_surface = None
         self._gestures = GestureController()
 
     def start(self):
@@ -246,16 +234,22 @@ class HandTracker:
                 if cap is not None:
                     cap.release()
 
-    def show_preview(self):
-        """Display at camera pace on the UI thread, without waiting for capture."""
+    def preview_surface(self, size):
+        """Return a cached Pygame preview and fresh tracking state without blocking."""
+        timestamp = now_ms()
         with self._lock:
             frame, frame_at = self._frame, self._snapshot.frame_at
-        if frame is not None and frame_at != self._preview_at:
-            state = self.snapshot()
+        state = self.snapshot(timestamp)
+        if frame is None or timestamp - frame_at > TRACKING_STALE_MS:
+            return None, state
+        key = (frame_at, state.result_at, state.direction, state.gesture, state.status, size)
+        if key != self._preview_key:
             preview = draw_control_preview(frame, state)
-            cv2.imshow("Camera Preview", preview)
-            self._preview_at = frame_at
-        return (cv2.waitKey(1) & 0xFF) in (ord("q"), ord("Q")) if frame is not None else False
+            rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+            surface = pygame.image.frombuffer(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]), 'RGB').convert()
+            self._preview_surface = pygame.transform.smoothscale(surface, size)
+            self._preview_key = key
+        return self._preview_surface, state
 
     def close(self):
         self._stop.set()

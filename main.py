@@ -1,5 +1,4 @@
 """Entry point for Rabbit Adventure's booth presentation."""
-import cv2
 import pygame
 from game import run_game
 from hand_tracking import HandTracker
@@ -21,7 +20,6 @@ def main():
     finally:
         if tracker is not None:
             tracker.close()
-        cv2.destroyAllWindows()
         pygame.quit()
 
 

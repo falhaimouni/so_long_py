@@ -11,7 +11,7 @@ from level_loader import get_levels
 from level_mechanics import LevelMechanics, PuzzleState, LEVEL_GUIDES, next_fox_position
 from effects import Feedback
 from hazards import HazardField
-from ui import create_display, draw_hud, modal, fullscreen, panel
+from ui import create_display, draw_hud, draw_camera, modal, fullscreen, panel, render_scale, point
 
 LEVELS = get_levels()
 DIRECTIONS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
@@ -70,11 +70,11 @@ def _run_level(level_index, tracker):
     map_width = len(current_level[0])
     map_height = len(current_level)
     
-    tile_size = 64
+    screen = create_display()
+    tile_size = max(1, int(64 * render_scale()))
     width = map_width * tile_size
     height = map_height * tile_size
     
-    screen = create_display()
     board = pygame.Surface((width, height)).convert()
     title, hint = LEVEL_GUIDES[level_index] if level_index < len(LEVEL_GUIDES) else (
         "Adventure", "Collect every carrot and reach the burrow.")
@@ -231,6 +231,21 @@ def _run_level(level_index, tracker):
                 pressed_direction = None
                 repeater.poll(None, now)
 
+        screen = pygame.display.get_surface()
+        new_tile_size = max(1, int(64 * render_scale()))
+        if new_tile_size != tile_size:
+            tile_size = new_tile_size
+            width, height = map_width * tile_size, map_height * tile_size
+            board = pygame.Surface((width, height)).convert()
+            background = pygame.Surface((width, height)).convert()
+            textures = load_textures_with_size(tile_size)
+            player_textures = create_player_textures(textures)
+            fox_textures = {"left": textures["F"],
+                            "right": pygame.transform.flip(textures["F"], True, False)}
+            for y, row in enumerate(current_level):
+                for x in range(len(row)):
+                    redraw_tile(x, y)
+
         # Reconcile held keys with actual state (e.g. a release while unfocused).
         keys = pygame.key.get_pressed()
         held_keys[:] = [key for key in held_keys if keys[key]]
@@ -239,8 +254,6 @@ def _run_level(level_index, tracker):
                 held_keys.append(key)
         keyboard_direction = pressed_direction or (KEY_DIRECTIONS[held_keys[-1]] if held_keys else None)
         state = tracker.snapshot(now) if tracker is not None else None
-        if tracker is not None and tracker.show_preview():
-            return "quit"
         direction = keyboard_direction or (state.direction if state is not None else None)
         step = repeater.poll(direction, now)
         if step is not None and not game_over and not won:
@@ -340,8 +353,10 @@ def _run_level(level_index, tracker):
             gate_status = 'Sun gates open / Moon gates closed' if puzzle_state.sun_open else 'Moon gates open / Sun gates closed'
         draw_hud(screen, level_index, len(LEVELS), title, hint, coins, initial_coins,
                  danger_status, gate_status)
-        panel(screen, pygame.Rect(156, 94, width+8, height+8))
-        screen.blit(board, (160, 98))
+        panel(screen, pygame.Rect(36, 94, 968, 712))
+        screen.blit(board, point((40, 98)))
+        if tracker is not None:
+            draw_camera(screen, tracker)
 
         if game_over:
             feedback.play('lost')
