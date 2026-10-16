@@ -10,7 +10,9 @@ from motion import AnimatedPosition, MoveRepeater
 from texture_loader import load_textures_with_size, create_player_textures
 from level_loader import get_levels
 from level_mechanics import LevelMechanics, PuzzleState, LEVEL_GUIDES, next_fox_position
+from effects import Feedback
 from hazards import HazardField
+from ui import create_display, draw_hud, modal, fullscreen, panel
 
 LEVELS = get_levels()
 DIRECTIONS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
@@ -53,6 +55,9 @@ def run_game(level_index=0, tracker=None):
         outcome = _run_level(level_index, tracker)
         if outcome == "restart":
             continue
+        if outcome == "again":
+            level_index = 0
+            continue
         if outcome == "next":
             level_index += 1
             continue
@@ -69,7 +74,8 @@ def _run_level(level_index, tracker):
     width = map_width * tile_size
     height = map_height * tile_size
     
-    screen = pygame.display.set_mode((width, height))
+    screen = create_display()
+    board = pygame.Surface((width, height)).convert()
     title, hint = LEVEL_GUIDES[level_index] if level_index < len(LEVEL_GUIDES) else (
         "Adventure", "Collect every carrot and reach the burrow.")
     pygame.display.set_caption(f"Rabbit Adventure - Level {level_index + 1}: {title}")
@@ -101,6 +107,10 @@ def _run_level(level_index, tracker):
                 current_level[y][x] = '0'
     hazards = HazardField(level_index, current_level)
 
+    portal_positions = [(x,y,char) for y,row in enumerate(current_level)
+                        for x,char in enumerate(row) if char in 'ABUV']
+    switch_positions = [(x,y) for y,row in enumerate(current_level)
+                        for x,char in enumerate(row) if char == 'S']
     clock = pygame.time.Clock()
     facing_direction = "right"
     coins = sum(row.count("C") for row in current_level)
@@ -111,12 +121,10 @@ def _run_level(level_index, tracker):
     held_keys = []
     show_metrics = False
     metrics_font = pygame.font.SysFont("Arial", 18)
-    guide_font = pygame.font.SysFont("Arial", 18, bold=True)
-    hint_font = pygame.font.SysFont("Arial", 16)
-    danger_font = pygame.font.SysFont("Arial", 14, bold=True)
-    hint_text = hint_font.render(hint, True, (225, 240, 215))
-    hud = pygame.Surface((width, tile_size)).convert()
-    hud_signature = None
+    initial_coins = coins
+    moves = 0
+    feedback = Feedback()
+    elapsed_ms = 0
     last_work_ms = 0.0
     metrics_text = None
     metrics_updated_at = 0
@@ -135,7 +143,7 @@ def _run_level(level_index, tracker):
             redraw_tile(x, y)
 
     def move_player(dx, dy, new_facing_direction):
-        nonlocal player_x, player_y, facing_direction, coins, game_over, won, puzzle_state
+        nonlocal player_x, player_y, facing_direction, coins, game_over, won, puzzle_state, moves
 
         facing_direction = new_facing_direction
         new_x, new_y = player_x + dx, player_y + dy
@@ -158,6 +166,7 @@ def _run_level(level_index, tracker):
                 game_over = True
                 return
 
+            moves += 1
             origin = (player_x, player_y)
             previous_state = puzzle_state
             (player_x, player_y), puzzle_state = mechanics.enter(origin, (new_x, new_y), puzzle_state)
@@ -177,6 +186,7 @@ def _run_level(level_index, tracker):
             if target == 'C':
                 current_level[player_y][player_x] = '0'
                 coins -= 1
+                feedback.collect((player_x+.5)*tile_size, (player_y+.5)*tile_size)
                 redraw_tile(player_x, player_y)
             elif target == 'E':
                 if coins == 0:
@@ -186,6 +196,7 @@ def _run_level(level_index, tracker):
         dt = clock.tick(TARGET_FPS)
         frame_started = perf_counter()
         now = now_ms()
+        elapsed_ms += dt
         hazards.advance(dt)
         if not won and hazards.deadly((player_x, player_y)):
             game_over = True
@@ -198,6 +209,20 @@ def _run_level(level_index, tracker):
                     return "quit"
                 if event.key == pygame.K_r:
                     return "restart"
+                if event.key == pygame.K_m:
+                    Feedback.muted = not Feedback.muted
+                if event.key == pygame.K_F11:
+                    fullscreen()
+                if event.key == pygame.K_p:
+                    action = modal(screen, 'pause', 'A moment in the woods.',
+                                   'Your adventure is waiting. Take your time, then follow the trail.',
+                                   'ENTER / P  Resume     M  Title     Q  Exit', tracker)
+                    if action != 'resume':
+                        return action
+                    held_keys.clear()
+                    repeater = MoveRepeater(MOVE_INTERVAL_MS)
+                    clock.tick(TARGET_FPS)
+                    now = now_ms()
                 if event.key == pygame.K_F3:
                     show_metrics = not show_metrics
                 if event.key in KEY_DIRECTIONS:
@@ -283,36 +308,42 @@ def _run_level(level_index, tracker):
                     break
 
         # Collision uses tile coordinates; drawing interpolates between them.
-        screen.blit(background, (0, 0))
-        hazards.draw(screen, textures, tile_size, mechanics, puzzle_state)
+        board.blit(background, (0, 0))
+        portal_frame = int(hazards.elapsed / 90) % 16
+        for x, y, char in portal_positions:
+            board.blit(textures['0'], (x*tile_size,y*tile_size))
+            board.blit(textures[f'{char}_{portal_frame}'], (x*tile_size,y*tile_size))
+        for x,y in switch_positions:
+            board.blit(textures['0'], (x*tile_size,y*tile_size))
+            board.blit(textures['S_on' if puzzle_state.sun_open else 'S'], (x*tile_size,y*tile_size))
+        hazards.draw(board, textures, tile_size, mechanics, puzzle_state)
         for obj in (*logs, *foxes):
             draw_x, draw_y = obj.animation.position(now)
-            screen.blit(textures[obj.type], (round(draw_x * tile_size), round(draw_y * tile_size)))
+            board.blit(textures[obj.type], (round(draw_x * tile_size), round(draw_y * tile_size)))
         draw_x, draw_y = player_animation.position(now)
-        screen.blit(player_textures[facing_direction],
+        board.blit(player_textures[facing_direction],
                     (round(draw_x * tile_size), round(draw_y * tile_size)))
 
-        # The guide occupies only the bottom boundary, never a playable tile.
+        feedback.draw(board, dt)
+        if coins == 0:
+            for y, row in enumerate(current_level):
+                for x, char in enumerate(row):
+                    if char == 'E':
+                        pygame.draw.circle(board, (213, 234, 156),
+                                           (round((x+.5)*tile_size), round((y+.5)*tile_size)),
+                                           tile_size//2-3, 2)
         danger_status = hazards.status((player_x, player_y))
         if level_index == 4:
             wake_in = max(0, PORTAL_FOX_GRACE_MS + PORTAL_FOX_INTERVAL_MS - hazards.elapsed)
             danger_status = (f"Fox wakes in {wake_in / 1000:.1f}s" if wake_in else
-                             "One fox hunting - it can follow you through both portal pairs")
-        signature = (coins, puzzle_state.sun_open, danger_status)
-        if signature != hud_signature:
-            hud.fill((24, 48, 32))
-            status = f"{level_index + 1}/{len(LEVELS)}  {title}  |  Carrots: {coins}"
-            if mechanics.gates:
-                status += "  |  " + ("Sun OPEN / Moon CLOSED" if puzzle_state.sun_open
-                                        else "Sun CLOSED / Moon OPEN")
-            hud.blit(guide_font.render(status, True, (255, 235, 160)), (10, 6))
-            hud.blit(hint_text, (10, 27))
-            if danger_status:
-                hud.blit(danger_font.render(danger_status, True, (255, 180, 100)), (10, 46))
-            restart_text = hint_font.render("R: restart", True, (225, 240, 215))
-            hud.blit(restart_text, (width - restart_text.get_width() - 10, 6))
-            hud_signature = signature
-        screen.blit(hud, (0, height - tile_size))
+                             "The fox can follow you through portals. Keep moving.")
+        gate_status = ''
+        if mechanics.gates:
+            gate_status = 'Sun gates open / Moon gates closed' if puzzle_state.sun_open else 'Moon gates open / Sun gates closed'
+        draw_hud(screen, level_index, len(LEVELS), title, coins, initial_coins,
+                 danger_status, gate_status)
+        panel(screen, pygame.Rect(156, 94, width+8, height+8))
+        screen.blit(board, (160, 98))
 
         if show_metrics:
             if metrics_text is None or now - metrics_updated_at >= 250:
@@ -334,105 +365,19 @@ def _run_level(level_index, tracker):
                 screen.blit(text, (6, 6 + index * 23))
 
         if game_over:
-            overlay = pygame.Surface((width, height))
-            overlay.set_alpha(180)
-            overlay.fill((50, 50, 50))
-            screen.blit(overlay, (0, 0))
-            
-            # Create box for text
-            box_width = 600
-            box_height = 200
-            box_x = width//2 - box_width//2
-            box_y = height//2 - box_height//2
-            
-            # Draw box shadow
-            shadow_rect = pygame.Rect(box_x + 5, box_y + 5, box_width, box_height)
-            pygame.draw.rect(screen, (20, 20, 20), shadow_rect, border_radius=15)
-            
-            # Draw box background
-            box_rect = pygame.Rect(box_x, box_y, box_width, box_height)
-            pygame.draw.rect(screen, (139, 0, 0), box_rect, border_radius=15)
-            
-            # Draw box border
-            pygame.draw.rect(screen, (255, 100, 100), box_rect, 5, border_radius=15)
-            
-            # Render text
-            font_title = pygame.font.SysFont("Arial", 54, bold=True)
-            font_sub = pygame.font.SysFont("Arial", 28)
-            
-            text_title = font_title.render("Game Over!", True, (255, 255, 255))
-            text_sub = font_sub.render("R: Restart    Q: Quit", True, (255, 200, 200))
-            
-            # Center text in box
-            screen.blit(text_title, (width//2 - text_title.get_width()//2, box_y + 50))
-            screen.blit(text_sub, (width//2 - text_sub.get_width()//2, box_y + 120))
-            
-            pygame.display.flip()
-            
-            waiting = True
-            while waiting:
-                clock.tick(TARGET_FPS)
-                if tracker is not None and tracker.show_preview():
-                    return "quit"
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT: return "quit"
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_r:
-                            return "restart"
-                        if event.key == pygame.K_q:
-                            return "quit"
+            feedback.play('lost')
+            return modal(screen, 'lost', 'Every trail takes practice.',
+                         'The forest caught you this time. Try a new route, watch the hazards, and keep your harvest safe.',
+                         f'{initial_coins-coins} / {initial_coins} carrots   /   {moves} steps   /   {elapsed_ms/1000:.1f}s', tracker)
 
         pygame.display.flip()
         last_work_ms = (perf_counter() - frame_started) * 1000
 
     if won:
-        if level_index + 1 < len(LEVELS):
-            return "next"
-        else:
-            # Game Complete - Beautiful Win Screen
-            # Create gradient background
-            for y in range(height):
-                color_value = int(144 + (200 - 144) * (y / height))
-                pygame.draw.line(screen, (100, color_value, 100), (0, y), (width, y))
-            
-            # Create celebration box
-            box_width = 500
-            box_height = 250
-            box_x = width//2 - box_width//2
-            box_y = height//2 - box_height//2
-            
-            # Draw box shadow
-            shadow_rect = pygame.Rect(box_x + 8, box_y + 8, box_width, box_height)
-            pygame.draw.rect(screen, (30, 80, 30), shadow_rect, border_radius=20)
-            
-            # Draw box background with gradient effect
-            box_rect = pygame.Rect(box_x, box_y, box_width, box_height)
-            pygame.draw.rect(screen, (255, 215, 0), box_rect, border_radius=20)
-            
-            # Inner box for contrast
-            inner_rect = pygame.Rect(box_x + 10, box_y + 10, box_width - 20, box_height - 20)
-            pygame.draw.rect(screen, (255, 255, 150), inner_rect, border_radius=15)
-            
-            # Draw decorative border
-            pygame.draw.rect(screen, (0, 128, 0), box_rect, 8, border_radius=20)
-            pygame.draw.rect(screen, (255, 215, 0), box_rect, 4, border_radius=20)
-            
-            # Render victory text
-            font_title = pygame.font.SysFont("Arial", 72, bold=True)
-            font_sub = pygame.font.SysFont("Arial", 36)
-            
-            text_title = font_title.render("YOU WIN!", True, (0, 100, 0))
-            text_sub = font_sub.render("Press Q to quit", True, (34, 139, 34))
-            
-            # Center text in box
-            screen.blit(text_title, (width//2 - text_title.get_width()//2, box_y + 60))
-            screen.blit(text_sub, (width//2 - text_sub.get_width()//2, box_y + 150))
-            
-            pygame.display.flip()
-            while True:
-                clock.tick(TARGET_FPS)
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
-                        return "quit"
-                if tracker is not None and tracker.show_preview():
-                    return "quit"
+        feedback.play('win')
+        final = level_index + 1 == len(LEVELS)
+        return modal(screen, 'complete' if final else 'next',
+                     'Welcome home, little hero.' if final else 'A little closer to home.',
+                     'Every carrot gathered. Every trail conquered. The woodland is yours. Pass the adventure to the next explorer.' if final else
+                     f'{title} complete. Your harvest is safe. A new corner of the forest awaits.',
+                     f'{initial_coins} / {initial_coins} carrots   /   {moves} steps   /   {elapsed_ms/1000:.1f}s', tracker)

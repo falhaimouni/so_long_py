@@ -10,7 +10,7 @@ LEVEL_GUIDES = (
     ("Carrot Trail", "Collect every carrot, then reach the burrow."),
     ("River Ride", "Ride the logs across the river. Water without a log is dangerous."),
     ("Fox Forest", "The fox is faster now. Collect carrots and keep moving."),
-    ("Storm Switchyard", "Swap gates and cross storm lanes. Amber warns; bright lightning KILLS."),
+    ("Storm Switchyard", "Swap gates and cross storm lanes. Lightning strikes are lethal."),
     ("Portal Hunt", "One fox follows you through portals. Check the next garden before you jump."),
     ("Sinking Causeway", f"Water KILLS. Planks sink in {PLANK_LIFETIME_MS / 1000:g}s. Reach an island before the tidal wave."),
 )
