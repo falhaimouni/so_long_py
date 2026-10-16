@@ -96,7 +96,7 @@ stops movement and requires a fresh stable gesture when your hand returns.
 | --- | --- | --- |
 | 1 | Carrot Trail | Find the carrots and the burrow through a forest maze. |
 | 2 | River Ride | Cross the river on moving logs. |
-| 3 | Fox Forest | Escape a fox that follows the shortest route around walls (one step every 1260 ms). |
+| 3 | Fox Forest | Escape a fox that follows the shortest route around walls (one step every 1120 ms). |
 | 4 | Storm Switchyard | Swap sun/moon gates while dodging two alternating lightning lanes. Electrical storms strike the stone lanes. |
 | 5 | Portal Hunt | One fox hunts through all three gardens, using the same numbered portals as you. |
 | 6 | Sinking Causeway | Water and fallen planks kill. Each plank sinks after 2.52 seconds underfoot; periodic tidal waves sweep every bridge. |
@@ -106,11 +106,12 @@ All six share the same keyboard and hand movement controls. Step onto a switch
 to activate it; stepping off and back on toggles it again. Matching portal numbers
 teleport on entry, with no extra gesture or interaction button. The fox in level 5
 can use both portal pairs too. It starts hunting after a short head start and
-moves every 1680 ms. Contact with a fox is fatal, including stepping onto one.
+moves every 1512 ms. Foxes face their horizontal movement direction and retain
+that facing while moving vertically or teleporting. Contact with a fox is fatal, including stepping onto one.
 
 Storm lanes use stone paths with animated lightning during a strike.
 Storms and tides switch directly from quiet to active, with no advance warning
-phase or countdown. Their strike cadence and active durations are preserved. Lightning strikes kill on entry and while standing in the lane.
+phase or countdown. Storm cadence is preserved; tidal surges repeat every 8 seconds. Lightning strikes kill on entry and while standing in the lane.
 In level 6, stepping into water or onto a collapsed plank kills immediately.
 Standing on the same intact plank for 2.52 seconds also kills; moving to another
 plank resets that timer. Leaving a plank collapses it permanently. A 2.52-second
@@ -184,12 +185,12 @@ Tune these constants in `config.py`:
 | `MOVE_INTERVAL_MS` | 360 | Minimum interval between keyboard/hand moves |
 | `ANIMATION_MS` | 360 | Time to animate a tile movement |
 | `LOG_INTERVAL_MS` | 1400 | Log movement interval |
-| `FOX_INTERVAL_MS` | 1260 | Level 3 fox movement interval |
-| `PORTAL_FOX_INTERVAL_MS` | 1680 | Level 5 fox movement interval |
+| `FOX_INTERVAL_MS` | 1120 | Level 3 fox movement interval |
+| `PORTAL_FOX_INTERVAL_MS` | 1512 | Level 5 fox movement interval |
 | `PORTAL_FOX_GRACE_MS` | 3360 | Extra delay before the first portal-fox movement interval |
 | `PLANK_LIFETIME_MS` | 2520 | Maximum time standing on a plank |
 | `LIGHTNING_*_MS` | 7560 / 1680 | Quiet / lethal lightning durations |
-| `TIDE_*_MS` | 15120 / 2520 | Quiet / lethal tide durations |
+| `TIDE_*_MS` | 5480 / 2520 | Quiet / lethal tide durations; 8000 ms total cycle |
 | `CAMERA_WIDTH`, `CAMERA_HEIGHT` | 640, 480 | Requested camera resolution |
 | `CAMERA_FPS` | 30 | Requested capture rate and target inference submission rate |
 | `TRACKING_STALE_MS` | 250 | Stop using older tracking results |

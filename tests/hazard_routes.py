@@ -104,7 +104,10 @@ def solve(grid, level):
             for index, fox in enumerate(foxes):
                 if position == fox:
                     return None
-                if elapsed > grace and (elapsed - grace) % fox_interval == 0:
+                # A step can cross the deadline without landing exactly on it.
+                before = max(0, elapsed - dt - grace) // fox_interval
+                after = max(0, elapsed - grace) // fox_interval
+                if after > before:
                     foxes[index] = fox_step(fox, position)
                     if foxes[index] == position:
                         return None

@@ -39,6 +39,7 @@ class Log(GameObject):
 class Fox(GameObject):
     def __init__(self, x, y, interval_ms=FOX_INTERVAL_MS, delay_ms=0):
         super().__init__(x, y, 'F')
+        self.facing_direction = "left"
         self.interval_ms = interval_ms
         self.timer = -delay_ms
 
@@ -82,6 +83,9 @@ def _run_level(level_index, tracker):
     
     textures = load_textures_with_size(tile_size)
     player_textures = create_player_textures(textures)
+    # The fox artwork faces left; cache its mirror once per level.
+    fox_textures = {"left": textures["F"],
+                    "right": pygame.transform.flip(textures["F"], True, False)}
     
     player_x, player_y = find_start_pos(current_level)
     current_level[player_y][player_x] = '0' # Clear start pos from map
@@ -300,6 +304,8 @@ def _run_level(level_index, tracker):
                         current_level, previous, (player_x, player_y), mechanics,
                         puzzle_state, use_portals=level_index == 4)
                     teleported = abs(fox.x - previous[0]) + abs(fox.y - previous[1]) > 1
+                    if not teleported and fox.x != previous[0]:
+                        fox.facing_direction = "right" if fox.x > previous[0] else "left"
                     fox.animation.move_to(fox.x, fox.y, now, snap=teleported)
                     if (fox.x, fox.y) == (player_x, player_y):
                         game_over = True
@@ -319,7 +325,8 @@ def _run_level(level_index, tracker):
         hazards.draw(board, textures, tile_size, mechanics, puzzle_state)
         for obj in (*logs, *foxes):
             draw_x, draw_y = obj.animation.position(now)
-            board.blit(textures[obj.type], (round(draw_x * tile_size), round(draw_y * tile_size)))
+            sprite = fox_textures[obj.facing_direction] if isinstance(obj, Fox) else textures[obj.type]
+            board.blit(sprite, (round(draw_x * tile_size), round(draw_y * tile_size)))
         draw_x, draw_y = player_animation.position(now)
         board.blit(player_textures[facing_direction],
                     (round(draw_x * tile_size), round(draw_y * tile_size)))
