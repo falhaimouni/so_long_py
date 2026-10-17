@@ -6,6 +6,7 @@ landmarker; callbacks publish small snapshots under a lock, never game state.
 
 from dataclasses import dataclass, replace
 from math import exp, hypot
+from os import environ
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -21,6 +22,27 @@ from config import (CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, TRACKING_STALE_MS,
 
 def now_ms():
     return int(monotonic() * 1000)
+
+
+def camera_device():
+    """Prefer a physical Linux camera over virtual loopback devices."""
+    override = environ.get("CAMERA_DEVICE")
+    if override is not None:
+        return int(override) if override.isdecimal() else override
+    # Stable USB paths avoid depending on the order /dev/video* were created.
+    cameras = sorted(Path("/dev/v4l/by-id").glob("*-video-index0"))
+    if cameras:
+        return str(cameras[0])
+    # Also handle physical cameras without a persistent USB identifier.
+    for device in sorted(Path("/sys/class/video4linux").glob("video*")):
+        try:
+            name = (device / "name").read_text().lower()
+            index = (device / "index").read_text().strip()
+        except OSError:
+            continue
+        if index == "0" and not any(word in name for word in ("loopback", "virtual")):
+            return str(Path("/dev") / device.name)
+    return 0
 
 
 # Explicit connections keep drawing independent of MediaPipe's legacy solutions API.
@@ -129,8 +151,8 @@ def draw_control_preview(frame, state):
 
 
 class HandTracker:
-    def __init__(self, camera_index=0, model_path=None):
-        self.camera_index = camera_index
+    def __init__(self, camera_index=None, model_path=None):
+        self.camera_index = camera_device() if camera_index is None else camera_index
         self.model_path = str(model_path or Path(__file__).with_name("hand_landmarker.task"))
         self._lock = Lock()
         self._stop = Event()
@@ -174,7 +196,7 @@ class HandTracker:
         try:
             cap = cv2.VideoCapture(self.camera_index)
             if not cap.isOpened():
-                raise RuntimeError("camera did not open")
+                raise RuntimeError(f"camera {self.camera_index} did not open")
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
             cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
@@ -197,8 +219,9 @@ class HandTracker:
                     with self._lock:
                         self._snapshot = replace(self._snapshot, direction=None,
                                                  result_at=0, status="Camera read failed")
-                    if failures >= 10:
-                        raise RuntimeError("camera stopped delivering frames")
+                    if failures >= 3:
+                        raise RuntimeError(f"camera {self.camera_index} stopped delivering frames; "
+                                           "set CAMERA_DEVICE to select another webcam")
                     self._stop.wait(0.05)
                     continue
                 failures = 0

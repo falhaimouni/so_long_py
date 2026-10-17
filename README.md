@@ -17,6 +17,17 @@ the board inside the game window. Keyboard controls remain available if the
 camera cannot open. Keep `hand_landmarker.task`, `levels.txt`, and `textures/` with the
 Python source files.
 
+On Linux, the game prefers a physical webcam over virtual loopback devices.
+To choose a particular camera, set its device path or OpenCV index:
+
+```bash
+CAMERA_DEVICE=/dev/video1 python3 main.py
+```
+
+Paths under `/dev/v4l/by-id/` can also be used and stay stable when device numbers
+change. Set `CAMERA_DEVICE=0` to explicitly use the first device, including a
+virtual camera.
+
 Fullscreen renders at the display's native resolution. Text, game tiles, and the
 webcam panel resize directly from their sources when the window size changes.
 
